@@ -7,7 +7,11 @@ project_create(libudph_Class)
 
 PROJECT_SET_NAMESPACE(libudph_Class libudph)
 
-TARGET_CREATE_LIB(Class INTERFACE)
+TARGET_CREATE_LIB(Class STATIC)
+TARGET_APPEND_SRC(
+	Class
+	"libudph/Class/dummy.cpp"
+)
 TARGET_APPEND_HDR(
 	Class
 	"libudph/Class/Event.h"
