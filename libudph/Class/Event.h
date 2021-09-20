@@ -1,8 +1,10 @@
 #pragma once
 #include <array>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <ranges>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -123,6 +125,126 @@ class Handler
   void Disable()
   {
     Enable(false);
+  }
+};
+
+template<class... _Parameters>
+class Queue
+    : public UD::Interface::Interface<
+          Queue<_Parameters...>,
+          UD::Pack::Pack<Event<_Parameters...>, Handler<_Parameters...>>,
+          UD::Interface::SimpleModifiers>
+{
+  using Handler<_Parameters...>::Reset;
+
+  using ValueTuple             = std::tuple<_Parameters...>;
+  using EmptyConditionFunction = std::function<bool()>;
+  using ValueConditionFunction = std::function<bool(_Parameters...)>;
+
+  std::deque<ValueTuple>              _queued_event_values;
+  std::vector<EmptyConditionFunction> _empty_conditions;
+  std::vector<ValueConditionFunction> _value_conditions;
+
+  void Push(_Parameters... parameters)
+  {
+    _queued_event_values.push_back(ValueTuple{parameters...});
+  }
+  void ProcessTuple(ValueTuple values)
+  {
+    std::apply(Event<_Parameters...>::operator(), values);
+  }
+  auto TestTuple(ValueTuple values) -> bool
+  {
+    return std::apply(TestConditions, values);
+  }
+  auto TestEmptyConditions() -> bool
+  {
+    for (auto& condition : _empty_conditions)
+    {
+      if (!condition())
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+  auto TestValueConditions(_Parameters... parameters) -> bool
+  {
+    for (auto& condition : _value_conditions)
+    {
+      if (!condition(parameters...))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+  auto TestConditions(_Parameters... parameters) -> bool
+  {
+    return TestEmptyConditions() && TestValueConditions(parameters...);
+  }
+
+ public:
+  ~Queue() override       = default;
+  Queue(const Queue&)     = default;
+  Queue(Queue&&) noexcept = default;
+  auto operator=(const Queue&) -> Queue& = default;
+  auto operator=(Queue&&) noexcept -> Queue& = default;
+  Queue() : Handler<_Parameters...>(&Queue::Push, this) noexcept {}
+
+  using Handler<_Parameters...>::operator();
+
+  void ProcessNextSkipConditions()
+  {
+    ProcessSkipCondition(1);
+  }
+  void ProcessNext()
+  {
+    Process(1);
+  }
+  void ProcessSkipConditions(std::size_t max = 0)
+  {
+    while (!_queued_event_values.empty())
+    {
+      auto values = _queued_event_values.pop_front();
+      ProcessTuple(values);
+      if (max == 1)
+      {
+        break;
+      }
+      else if (max != 0)
+      {
+        max--;
+      }
+    }
+  }
+  void Process(std::size_t max = 0)
+  {
+    while (!_queued_event_values.empty())
+    {
+      auto values = _queued_event_values.pop_front();
+      if (!TestTuple(values))
+      {
+        break;
+      }
+      ProcessTuple(values);
+      if (max == 1)
+      {
+        break;
+      }
+      else if (max != 0)
+      {
+        max--;
+      }
+    }
+  }
+  void AddCondition(EmptyConditionFunction function)
+  {
+    _empty_conditions.push_back(function);
+  }
+  void AddCondition(ValueConditionFunction function)
+  {
+    _value_conditions.push_back(function);
   }
 };
 }  // namespace UD::Event
