@@ -190,7 +190,7 @@ class Queue
   Queue(Queue&&) noexcept = default;
   auto operator=(const Queue&) -> Queue& = default;
   auto operator=(Queue&&) noexcept -> Queue& = default;
-  Queue() : Handler<_Parameters...>(&Queue::Push, this) noexcept {}
+  Queue() noexcept : Handler<_Parameters...>(&Queue::Push, this) {}
 
   using Handler<_Parameters...>::operator();
 
