@@ -196,7 +196,7 @@ class Queue
 
   void ProcessNextSkipConditions()
   {
-    ProcessSkipCondition(1);
+    ProcessSkipConditions(1);
   }
   void ProcessNext()
   {
