@@ -21,7 +21,17 @@ TARGET_APPEND_HDR(
 )
 
 TARGET_LINK(Class)
-
 TARGET_PACKAGE(Class)
+
+TARGET_CREATE_EXE(Test_Class)
+TARGET_SET_DIR(Test_Class "libudph/Test/Class")
+TARGET_APPEND_SRC(
+	Test_Class
+	"main.cpp"
+)
+TARGET_APPEND_DEP(Test_Class libudph::Class)
+
+TARGET_LINK(Test_Class)
+TARGET_PACKAGE(Test_Class)
 
 FINALIZE()
