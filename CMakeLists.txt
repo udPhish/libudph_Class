@@ -32,6 +32,5 @@ TARGET_APPEND_SRC(
 TARGET_APPEND_DEP(Test_Class libudph::Class)
 
 TARGET_LINK(Test_Class)
-TARGET_PACKAGE(Test_Class)
 
 FINALIZE()
