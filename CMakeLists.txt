@@ -21,7 +21,6 @@ TARGET_APPEND_HDR(
 )
 
 TARGET_LINK(Class)
-TARGET_PACKAGE(Class)
 
 TARGET_CREATE_EXE(Test_Class)
 TARGET_SET_DIR(Test_Class "libudph/Test/Class")
