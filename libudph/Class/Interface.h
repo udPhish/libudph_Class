@@ -91,10 +91,14 @@ struct DistributePack<Pack<_Ts...>, _Templates...>
 
 template<class _Pack>
 struct InheritPack;
-template<class... _Ts>
-  requires(!Pack<_Ts...>::Empty)
-struct InheritPack<Pack<_Ts...>> : public _Ts...
+template<class _T, class... _Ts>
+  requires(!Pack<_T, _Ts...>::Empty)
+struct InheritPack<Pack<_T, _Ts...>>
+    : public _T
+    , public _Ts...
 {
+  using Pack = Pack<_T, _Ts...>;
+
   ~InheritPack() override             = default;
   InheritPack(const InheritPack&)     = default;
   InheritPack(InheritPack&&) noexcept = default;
@@ -103,11 +107,13 @@ struct InheritPack<Pack<_Ts...>> : public _Ts...
 
   InheritPack() = default;
 
+  using _T::_T;
   using _Ts::_Ts...;
 };
 template<>
 struct InheritPack<Pack<>>
 {
+  using Pack                          = Pack<>;
   virtual ~InheritPack()              = default;
   InheritPack(const InheritPack&)     = default;
   InheritPack(InheritPack&&) noexcept = default;
@@ -374,6 +380,11 @@ struct Cloneable
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+ private:
+  using BaseType = NextModifier<_Next>;
+
+ public:
+  using BaseType::BaseType;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -402,6 +413,11 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+ private:
+  using BaseType = NextModifier<_Next>;
+
+ public:
+  using BaseType::BaseType;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -430,6 +446,11 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+ private:
+  using BaseType = NextModifier<_Next>;
+
+ public:
+  using BaseType::BaseType;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -456,6 +477,11 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+ private:
+  using BaseType = NextModifier<_Next>;
+
+ public:
+  using BaseType::BaseType;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -478,6 +504,12 @@ struct Traited : public NextModifier<_Next>
   auto operator=(Traited&&) noexcept -> Traited& = default;
 
   Traited() noexcept = default;
+
+ private:
+  using BaseType = NextModifier<_Next>;
+
+ public:
+  using BaseType::BaseType;
 
   using Traits = Traits::Traits<_Derived>;
 };
@@ -507,6 +539,14 @@ struct Interface<_Derived,
   auto operator=(Interface&&) noexcept -> Interface& = default;
 
   Interface() = default;
+
+ private:
+  using BaseType =
+      typename Pack::ChainPack<Pack::Pack<_Derived, _Bases...>,
+                               Pack::TemplatePack<_Modifiers...>>::Type;
+
+ public:
+  using BaseType::BaseType;
 };
 template<class _Derived, class... _Bases>
 struct Interface<_Derived, Pack::Pack<_Bases...>>
@@ -519,6 +559,12 @@ struct Interface<_Derived, Pack::Pack<_Bases...>>
   auto operator=(Interface&&) noexcept -> Interface& = default;
 
   Interface() = default;
+
+ private:
+  using BaseType = Interface<_Derived, Pack::Pack<_Bases...>, DefaultModifiers>;
+
+ public:
+  using BaseType::BaseType;
 };
 template<class _Derived>
 struct Interface<_Derived>
@@ -534,6 +580,15 @@ struct Interface<_Derived>
   auto operator=(Interface&&) noexcept -> Interface& = default;
 
   Interface() = default;
+
+ private:
+  using BaseType
+      = Interface<_Derived,
+                  typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
+                  DefaultModifiers>;
+
+ public:
+  using BaseType::BaseType;
 };
 template<class _Derived, template<class, class, class...> class... _Modifiers>
 struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
@@ -549,5 +604,14 @@ struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
   auto operator=(Interface&&) noexcept -> Interface& = default;
 
   Interface() = default;
+
+ private:
+  using BaseType
+      = Interface<_Derived,
+                  typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
+                  Pack::TemplatePack<_Modifiers...>>;
+
+ public:
+  using BaseType::BaseType;
 };
 }  // namespace UD::Interface
