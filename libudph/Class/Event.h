@@ -93,7 +93,14 @@ class Handler
       : _function{std::bind_front(function, type)}
   {
   }
-
+  template<std::size_t _Size>
+  void operator()(std::array<Event<_Parameters...>&, _Size> events)
+  {
+    for (auto& e : events)
+    {
+      operator()(e);
+    }
+  }
   void operator()(Event<_Parameters...>& e)
   {
     auto caller
