@@ -49,12 +49,25 @@ class Event
 
   void operator()(_Parameters... parameters)
   {
-    for (auto& caller : _callers)
+    static std::deque<std::vector<std::weak_ptr<FunctionType>>::iterator> its;
+    for (auto it = _callers.begin(); it != _callers.end(); ++it)
     {
-      if (auto locked = caller.lock())
+      if (auto locked = it->lock())
       {
         (*locked)(parameters...);
       }
+      else
+      {
+        its.push_back(it);
+      }
+    }
+    if (!its.empty())
+    {
+      for (auto it = its.rbegin(); it != its.rend(); ++it)
+      {
+        _callers.erase(*it);
+      }
+      its.clear();
     }
   }
 };
@@ -121,7 +134,7 @@ class Handler
     _function = std::move(function);
   }
   template<class T>
-  void Reset(void(T::*function)(_Parameters...), T* type)
+  void Reset(void (T::*function)(_Parameters...), T* type)
   {
     _function = std::bind_front(function, type);
   }
@@ -156,13 +169,16 @@ class Queue
   {
     _queued_event_values.push_back(ValueTuple{parameters...});
   }
-  void ProcessTuple(ValueTuple values)
+  void ProcessTuple(ValueTuple& values)
   {
-    std::apply(Event<_Parameters...>::operator(), values);
+    static auto bound_func
+        = std::bind_front(&Event<_Parameters...>::operator(), this);
+    std::apply(bound_func, values);
   }
-  auto TestTuple(ValueTuple values) -> bool
+  auto TestTuple(ValueTuple& values) -> bool
   {
-    return std::apply(TestConditions, values);
+    static auto bound_func = std::bind_front(&Queue::TestConditions, this);
+    return std::apply(bound_func, values);
   }
   auto TestEmptyConditions() -> bool
   {
@@ -217,7 +233,8 @@ class Queue
   {
     while (!_queued_event_values.empty())
     {
-      auto values = _queued_event_values.pop_front();
+      auto values = _queued_event_values.front();
+      _queued_event_values.pop_front();
       ProcessTuple(values);
       if (max == 1)
       {
@@ -233,10 +250,11 @@ class Queue
   {
     while (!_queued_event_values.empty())
     {
-      auto values = _queued_event_values.pop_front();
+      auto values = _queued_event_values.front();
+      _queued_event_values.pop_front();
       if (!TestTuple(values))
       {
-        break;
+        continue;
       }
       ProcessTuple(values);
       if (max == 1)
@@ -257,5 +275,9 @@ class Queue
   {
     _value_conditions.push_back(function);
   }
+};
+struct Chain
+    : public Interface::Interface<Chain, UD::Interface::SimpleModifiers>
+{
 };
 }  // namespace UD::Event
