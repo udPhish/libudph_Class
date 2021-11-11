@@ -434,11 +434,7 @@ struct Cloneable
 
   Cloneable() = default;
 
- private:
-  using BaseType = NextModifier<_Next>;
-
- public:
-  using BaseType::BaseType;
+  using NextModifier<_Next>::NextModifier;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -468,11 +464,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
 
   Cloneable() = default;
 
- private:
-  using BaseType = NextModifier<_Next>;
-
- public:
-  using BaseType::BaseType;
+  using NextModifier<_Next>::NextModifier;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -502,11 +494,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
 
   Cloneable() = default;
 
- private:
-  using BaseType = NextModifier<_Next>;
-
- public:
-  using BaseType::BaseType;
+  using NextModifier<_Next>::NextModifier;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -534,11 +522,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
 
   Cloneable() = default;
 
- private:
-  using BaseType = NextModifier<_Next>;
-
- public:
-  using BaseType::BaseType;
+  using NextModifier<_Next>::NextModifier;
 
   [[nodiscard]] auto Clone() const  //
       -> std::unique_ptr<_Derived>
@@ -562,11 +546,7 @@ struct Traited : public NextModifier<_Next>
 
   Traited() noexcept = default;
 
- private:
-  using BaseType = NextModifier<_Next>;
-
- public:
-  using BaseType::BaseType;
+  using NextModifier<_Next>::NextModifier;
 
   using Traits = Traits::Traits<_Derived>;
 };
@@ -597,13 +577,11 @@ struct Interface<_Derived,
 
   Interface() = default;
 
- private:
-  using BaseType =
-      typename Pack::ChainPack<Pack::Pack<_Derived, _Bases...>,
-                               Pack::TemplatePack<_Modifiers...>>::Type;
-
- public:
-  using BaseType::BaseType;
+  using Pack::ChainPack<Pack::Pack<_Derived, _Bases...>,
+                        Pack::TemplatePack<_Modifiers...>>::Type::Type;
+  using Super = Interface<_Derived,
+                          Pack::Pack<_Bases...>,
+                          Pack::TemplatePack<_Modifiers...>>;
 };
 template<class _Derived, class... _Bases>
 struct Interface<_Derived, Pack::Pack<_Bases...>>
@@ -617,11 +595,7 @@ struct Interface<_Derived, Pack::Pack<_Bases...>>
 
   Interface() = default;
 
- private:
-  using BaseType = Interface<_Derived, Pack::Pack<_Bases...>, DefaultModifiers>;
-
- public:
-  using BaseType::BaseType;
+  using Interface<_Derived, Pack::Pack<_Bases...>, DefaultModifiers>::Interface;
 };
 template<class _Derived>
 struct Interface<_Derived>
@@ -638,14 +612,9 @@ struct Interface<_Derived>
 
   Interface() = default;
 
- private:
-  using BaseType
-      = Interface<_Derived,
+  using Interface<_Derived,
                   typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
-                  DefaultModifiers>;
-
- public:
-  using BaseType::BaseType;
+                  DefaultModifiers>::Interface;
 };
 template<class _Derived, template<class, class, class...> class... _Modifiers>
 struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
@@ -662,13 +631,8 @@ struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
 
   Interface() = default;
 
- private:
-  using BaseType
-      = Interface<_Derived,
+  using Interface<_Derived,
                   typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
-                  Pack::TemplatePack<_Modifiers...>>;
-
- public:
-  using BaseType::BaseType;
+                  Pack::TemplatePack<_Modifiers...>>::Interface;
 };
 }  // namespace UD::Interface

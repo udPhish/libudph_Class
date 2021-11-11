@@ -89,7 +89,7 @@ class Handler
   Handler() noexcept = default;
   Handler(FunctionType function) : _function{std::move(function)} {}
   template<class T>
-  Handler(FunctionType function, T* type)
+  Handler(void (T::*function)(_Parameters...), T* type)
       : _function{std::bind_front(function, type)}
   {
   }
@@ -121,7 +121,7 @@ class Handler
     _function = std::move(function);
   }
   template<class T>
-  void Reset(MemberFunctionType<T> function, T* type)
+  void Reset(void(T::*function)(_Parameters...), T* type)
   {
     _function = std::bind_front(function, type);
   }
@@ -197,7 +197,11 @@ class Queue
   Queue(Queue&&) noexcept = default;
   auto operator=(const Queue&) -> Queue& = default;
   auto operator=(Queue&&) noexcept -> Queue& = default;
-  Queue() noexcept : Handler<_Parameters...>(&Queue::Push, this) {}
+  Queue() noexcept
+      : Queue::Super{
+          Queue::Constructor<Handler<_Parameters...>>::Call(&Queue::Push, this)}
+  {
+  }
 
   using Handler<_Parameters...>::operator();
 
