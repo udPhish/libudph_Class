@@ -4,10 +4,17 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
+#include <utility>
 
 namespace UD::Pack
 {
+template<class T>
+concept HasType = requires(T)
+{
+  typename T::type;
+};
 template<class... _Ts>
 struct Pack;
 template<>
@@ -89,26 +96,72 @@ struct DistributePack<Pack<_Ts...>, _Templates...>
   using Pack = UD::Pack::Pack<_Templates<_Ts...>...>;
 };
 
+template<class _T>
+struct InheritPackBase : public _T
+{
+  template<class T>
+  friend struct InheritPack;
+
+ private:
+  struct Constructor
+  {
+    template<class... _Args>
+    struct Call
+    {
+      using type = InheritPackBase<_T>;
+      std::tuple<_Args...> args;
+      Call(_Args... args) : args{args...} {}
+    };
+  };
+
+ public:
+  ~InheritPackBase() override                 = default;
+  InheritPackBase(const InheritPackBase&)     = default;
+  InheritPackBase(InheritPackBase&&) noexcept = default;
+  auto operator=(const InheritPackBase&) -> InheritPackBase& = default;
+  auto operator=(InheritPackBase&&) noexcept -> InheritPackBase& = default;
+  InheritPackBase() noexcept                                     = default;
+  using _T::_T;
+  template<class... Args>
+  InheritPackBase(typename Constructor::template Call<Args...>&& constructor)
+      : InheritPackBase(std::forward<Constructor::Call<Args...>>(constructor),
+                        std::make_index_sequence<
+                            std::tuple_size<std::tuple<Args...>>::value>{})
+  {
+  }
+
+ private:
+  template<class... Args, std::size_t... Indices>
+  InheritPackBase(typename Constructor::template Call<Args...>&& constructor,
+                  std::index_sequence<Indices...>&&              indices)
+      : _T{std::get<Indices>(constructor.args)...}
+  {
+  }
+};
 template<class _Pack>
 struct InheritPack;
 template<class _T, class... _Ts>
-  requires(!Pack<_T, _Ts...>::Empty)
 struct InheritPack<Pack<_T, _Ts...>>
-    : public _T
-    , public _Ts...
+    : public InheritPackBase<_T>
+    , public InheritPackBase<_Ts>...
 {
-  using Pack = Pack<_T, _Ts...>;
-
   ~InheritPack() override             = default;
   InheritPack(const InheritPack&)     = default;
   InheritPack(InheritPack&&) noexcept = default;
   auto operator=(const InheritPack&) -> InheritPack& = default;
   auto operator=(InheritPack&&) noexcept -> InheritPack& = default;
 
-  InheritPack() = default;
+  template<class T>
+  using Constructor = typename InheritPackBase<T>::Constructor;
 
-  using _T::_T;
-  using _Ts::_Ts...;
+  using InheritPackBase<_T>::InheritPackBase;
+  using InheritPackBase<_Ts>::InheritPackBase...;
+  InheritPack() noexcept = default;
+
+  template<HasType... Ts>
+  InheritPack(Ts&&... ts) : Ts::type{std::forward<Ts>(ts)}...
+  {
+  }
 };
 template<>
 struct InheritPack<Pack<>>
@@ -120,7 +173,7 @@ struct InheritPack<Pack<>>
   auto operator=(const InheritPack&) -> InheritPack& = default;
   auto operator=(InheritPack&&) noexcept -> InheritPack& = default;
 
-  InheritPack() = default;
+  InheritPack() noexcept = default;
 };
 
 template<class _Pack, class _Templates>
@@ -380,6 +433,7 @@ struct Cloneable
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+
  private:
   using BaseType = NextModifier<_Next>;
 
@@ -413,6 +467,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+
  private:
   using BaseType = NextModifier<_Next>;
 
@@ -446,6 +501,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+
  private:
   using BaseType = NextModifier<_Next>;
 
@@ -477,6 +533,7 @@ struct Cloneable<_Next, _Derived, _Bases...>
   auto operator=(Cloneable&&) noexcept -> Cloneable& = default;
 
   Cloneable() = default;
+
  private:
   using BaseType = NextModifier<_Next>;
 
