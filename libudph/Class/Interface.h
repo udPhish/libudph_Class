@@ -579,9 +579,7 @@ struct Interface<_Derived,
 
   using Pack::ChainPack<Pack::Pack<_Derived, _Bases...>,
                         Pack::TemplatePack<_Modifiers...>>::Type::Type;
-  using Super = Interface<_Derived,
-                          Pack::Pack<_Bases...>,
-                          Pack::TemplatePack<_Modifiers...>>;
+  using Super = Interface;
 };
 template<class _Derived, class... _Bases>
 struct Interface<_Derived, Pack::Pack<_Bases...>>
@@ -596,6 +594,7 @@ struct Interface<_Derived, Pack::Pack<_Bases...>>
   Interface() = default;
 
   using Interface<_Derived, Pack::Pack<_Bases...>, DefaultModifiers>::Interface;
+  using Super = Interface;
 };
 template<class _Derived>
 struct Interface<_Derived>
@@ -615,6 +614,7 @@ struct Interface<_Derived>
   using Interface<_Derived,
                   typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
                   DefaultModifiers>::Interface;
+  using Super = Interface;
 };
 template<class _Derived, template<class, class, class...> class... _Modifiers>
 struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
@@ -634,5 +634,6 @@ struct Interface<_Derived, Pack::TemplatePack<_Modifiers...>>
   using Interface<_Derived,
                   typename Traits::SelectDirectBases<_Derived, _Derived>::Type,
                   Pack::TemplatePack<_Modifiers...>>::Interface;
+  using Super = Interface;
 };
 }  // namespace UD::Interface
