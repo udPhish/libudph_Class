@@ -233,9 +233,8 @@ class Queue
   {
     while (!_queued_event_values.empty())
     {
-      auto values = _queued_event_values.front();
+      ProcessTuple(_queued_event_values.front());
       _queued_event_values.pop_front();
-      ProcessTuple(values);
       if (max == 1)
       {
         break;
@@ -250,13 +249,11 @@ class Queue
   {
     while (!_queued_event_values.empty())
     {
-      auto values = _queued_event_values.front();
-      _queued_event_values.pop_front();
-      if (!TestTuple(values))
+      if (TestTuple(_queued_event_values.front()))
       {
-        continue;
+        ProcessTuple(_queued_event_values.front());
       }
-      ProcessTuple(values);
+      _queued_event_values.pop_front();
       if (max == 1)
       {
         break;
@@ -279,5 +276,11 @@ class Queue
 struct Chain
     : public Interface::Interface<Chain, UD::Interface::SimpleModifiers>
 {
+  ~Chain() override       = default;
+  Chain(const Chain&)     = default;
+  Chain(Chain&&) noexcept = default;
+  auto operator=(const Chain&) -> Chain& = default;
+  auto operator=(Chain&&) noexcept -> Chain& = default;
+  Chain() noexcept : Chain::Super{} {}
 };
 }  // namespace UD::Event
