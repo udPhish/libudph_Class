@@ -5,11 +5,55 @@
 #include <memory>
 #include <ranges>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "Interface.h"
-
+namespace UD::Traits
+{
+template<class T>
+struct FunctionType;
+template<class _Ret, class... _Params>
+struct FunctionType<_Ret(_Params...)>
+{
+  using return_type = _Ret;
+  using parameters  = std::tuple<_Params...>;
+};
+}  // namespace UD::Traits
+namespace UD::Concept
+{
+template<class T>
+concept Any = true;
+template<class T, class... Params>
+concept Invocable = requires(T t, Params... params)
+{
+  {
+    t(params...)
+    } -> Any;
+};
+template<class T, class Ret, class... Params>
+concept CallableExplicit = requires(T t, Params... params)
+{
+  {
+    t(params...)
+    } -> std::convertible_to<Ret>;
+};
+namespace detail
+{
+  template<class... Ts>
+  struct CallableHelper : public std::false_type
+  {
+  };
+  template<class T, class Ret, class... Parameters>
+    requires CallableExplicit<T, Ret, Parameters...>
+  struct CallableHelper<T, Ret(Parameters...)> : public std::true_type
+  {
+  };
+}  // namespace detail
+template<class T, class F>
+concept Callable = detail::CallableHelper<T, F>::value;
+}  // namespace UD::Concept
 namespace UD::Event
 {
 template<class... _Parameters>
@@ -29,16 +73,14 @@ class Event
   using Handler = Handler<_Parameters...>;
 
  private:
-  friend Handler;
-
   std::vector<std::weak_ptr<FunctionType>> _callers = {};
 
+ public:
   void Add(std::weak_ptr<FunctionType> function)
   {
     _callers.push_back(function);
   }
 
- public:
   ~Event() override       = default;
   Event(const Event&)     = default;
   Event(Event&&) noexcept = default;
@@ -49,6 +91,13 @@ class Event
 
   void operator()(_Parameters... parameters)
   {
+    // TODO: Define Event struct that contains parameters for
+    // Handler<Event<Parameters...>>
+    //       Add another vector with Handler<Event<Parameters...>>
+    //       Create struct in this function and pass to all handlers from both
+    //       vectors Will require order-keeping between two vectors (maybe a 3rd
+    //       with alternating counters?)
+
     static std::deque<std::vector<std::weak_ptr<FunctionType>>::iterator> its;
     for (auto it = _callers.begin(); it != _callers.end(); ++it)
     {
@@ -71,6 +120,22 @@ class Event
     }
   }
 };
+
+struct FunctionHolder
+{
+  virtual ~FunctionHolder() = default;
+};
+template<class... Ts>
+struct FunctionHolderSpecific : public FunctionHolder
+{
+  std::shared_ptr<std::function<void(Ts...)>> function;
+
+  FunctionHolderSpecific(std::shared_ptr<std::function<void(Ts...)>> func)
+      : function{func}
+  {
+  }
+  ~FunctionHolderSpecific() override = default;
+};
 template<class... _Parameters>
 class Handler
     : public UD::Interface::Interface<Handler<_Parameters...>,
@@ -80,9 +145,9 @@ class Handler
   template<class T>
   using MemberFunctionType = std::function<void (T::*)(_Parameters...)>;
 
-  FunctionType                               _function = {};
-  std::vector<std::shared_ptr<FunctionType>> _callers  = {};
-  bool                                       _enabled  = true;
+  FunctionType                                 _function = {};
+  std::vector<std::unique_ptr<FunctionHolder>> _callers  = {};
+  bool                                         _enabled  = true;
 
   void Run(_Parameters... parameters)
   {
@@ -90,6 +155,21 @@ class Handler
     {
       _function(parameters...);
     }
+  }
+  template<class F, class... Ts>
+    requires UD::Concept::Callable < F,
+        std::tuple<_Parameters...>(std::tuple<Ts...>)
+  > void RunAdaptedTuple(F func, std::tuple<Ts...> parameters)
+  {
+    std::apply(&Handler::Run,
+               std::tuple_cat(std::tuple(this), func(parameters)));
+  }
+  template<class F, class... Ts>
+    requires UD::Concept::Callable < F, std::tuple<_Parameters...>(Ts...)
+  > void RunAdapted(F func, Ts... parameters)
+  {
+    std::apply(&Handler::Run,
+               std::tuple_cat(std::tuple(this), func(parameters...)));
   }
 
  public:
@@ -114,11 +194,45 @@ class Handler
       operator()(e);
     }
   }
+  template<class... Ts>
   void operator()(Event<_Parameters...>& e)
   {
-    auto caller
-        = std::make_shared<FunctionType>(std::bind_front(&Handler::Run, this));
-    e.Add(caller);
+    auto caller = std::make_unique<FunctionHolderSpecific<_Parameters...>>(
+        std::make_shared<FunctionType>(std::bind_front(&Handler::Run, this)));
+    e.Add(caller->function);
+    _callers.push_back(std::move(caller));
+  }
+  template<class F, class... Ts>
+    requires UD::Concept::Callable < F, std::tuple<_Parameters...>(Ts...)
+  > &&(
+      !UD::Concept::Callable<F,
+                             std::tuple<_Parameters...>(std::tuple<Ts...>)>)void
+      operator()(Event<Ts...>& e, F adaptor_function)
+  {
+    auto caller = std::make_unique<FunctionHolderSpecific<Ts...>>(
+        std::make_shared<std::function<void(Ts...)>>(
+            std::bind_front(&Handler::RunAdapted<F, Ts...>,
+                            this,
+                            adaptor_function)));
+    e.Add(caller->function);
+    _callers.push_back(std::move(caller));
+  }
+  template<class F, class... Ts>
+    requires UD::Concept::Callable < F,
+        std::tuple<_Parameters...>(std::tuple<Ts...>)
+  > void operator()(Event<Ts...>& e, F adaptor_function)
+  {
+    auto caller = std::make_unique<FunctionHolderSpecific<Ts...>>(
+        std::make_shared<std::function<void(Ts...)>>(std::bind_front(
+            [](Handler* h, F f, Ts... ts)
+            {
+              static std::function<void(std::tuple<Ts...>)> func
+                  = std::bind_front(&Handler::RunAdaptedTuple<F, Ts...>, h, f);
+              func(std::tuple<Ts...>(ts...));
+            },
+            this,
+            adaptor_function)));
+    e.Add(caller->function);
     _callers.push_back(std::move(caller));
   }
   void operator()()
@@ -147,6 +261,18 @@ class Handler
     Enable(false);
   }
 };
+// TODO: Same as Handler<_Parameters...> but handles params and an event object
+// with
+//       event functions and data (like Quit (or skip), Count, custom data,
+//       etc...) instead of only handling params.
+// template<class... _Parameters>
+// struct Handler<Event<_Parameters...>>
+//    : public UD::Interface::Interface<Handler<_Parameters...>,
+//                                      UD::Pack::Pack<Handler<_Parameters...>>,
+//                                      UD::Interface::SimpleModifiers>
+//{
+//  using Handler::Super::Super;
+//};
 
 template<class... _Parameters>
 class Queue
@@ -273,14 +399,24 @@ class Queue
     _value_conditions.push_back(function);
   }
 };
+template<class... _Parameters>
 struct Chain
-    : public Interface::Interface<Chain, UD::Interface::SimpleModifiers>
+    : public Interface::Interface<
+          Chain<_Parameters...>,
+          UD::Pack::Pack<Event<_Parameters...>, Handler<_Parameters...>>,
+          UD::Interface::SimpleModifiers>
 {
   ~Chain() override       = default;
   Chain(const Chain&)     = default;
   Chain(Chain&&) noexcept = default;
   auto operator=(const Chain&) -> Chain& = default;
   auto operator=(Chain&&) noexcept -> Chain& = default;
-  Chain() noexcept : Chain::Super{} {}
+
+  Chain() noexcept = default;
+
+  // TODO: Should not be hiding base members... Requires rethinking inheritance
+
+ private:
+  using Event<_Parameters...>::operator();
 };
 }  // namespace UD::Event
