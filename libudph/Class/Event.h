@@ -26,17 +26,17 @@ namespace UD::Concept
 template<class T>
 concept Any = true;
 template<class T, class... Params>
-concept Invocable = requires(T t, Params... params)
+concept Invocable = requires(T t, Params&&... params)
 {
   {
-    t(params...)
+    t(std::forward<Params>(params)...)
     } -> Any;
 };
 template<class T, class Ret, class... Params>
-concept CallableExplicit = requires(T t, Params... params)
+concept CallableExplicit = requires(T t, Params&&... params)
 {
   {
-    t(params...)
+    t(std::forward<Params>(params)...)
     } -> std::convertible_to<Ret>;
 };
 namespace detail
@@ -54,31 +54,138 @@ namespace detail
 template<class T, class F>
 concept Callable = detail::CallableHelper<T, F>::value;
 }  // namespace UD::Concept
+namespace UD::Concept::Event
+{
+}  // namespace UD::Concept::Event
 namespace UD::Event
 {
+namespace Concept = UD::Concept::Event;
+class State
+{
+  bool                  _skip = false;
+  std::shared_ptr<void> _data = nullptr;
+
+ public:
+  template<class T>
+  void Set(std::shared_ptr<T> ptr)
+  {
+    _data = ptr;
+  }
+  template<class T, class... Ts>
+    requires requires(Ts... ts)
+    {
+      {
+        T
+        {
+          ts...
+        }
+        } -> std::same_as<T>;
+    }
+  void Emplace(Ts... ts)
+  {
+    _data = std::make_shared<T>(ts...);
+  }
+  template<class T>
+  auto Get() -> std::shared_ptr<T>
+  {
+    return std::static_pointer_cast<T>(_data);
+  }
+  void Skip()
+  {
+    _skip = true;
+  }
+  bool IsSkipping()
+  {
+    return _skip;
+  }
+  void Clear()
+  {
+    _skip = false;
+    _data = nullptr;
+  }
+};
 template<class... _Parameters>
 class Event;
 
 template<class... _Parameters>
 class Handler;
 
+namespace detail
+{
+template<class... _Parameters>
+struct EventConnection
+{
+  std::function<void(_Parameters&&...)> function = [](_Parameters&&...) {};
+  std::shared_ptr<bool>                 valid    = std::make_shared<bool>(true);
+};
+struct Invalidator
+{
+  std::shared_ptr<bool> _valid = nullptr;
+  Invalidator(std::shared_ptr<bool> valid) : _valid{valid} {}
+  ~Invalidator()
+  {
+    *_valid = false;
+  }
+};
+
+}  // namespace detail
 template<class... _Parameters>
 class Event
     : public UD::Interface::Interface<Event<_Parameters...>,
                                       UD::Interface::SimpleModifiers>
 {
-  using FunctionType = std::function<void(_Parameters...)>;
+  std::vector<detail::EventConnection<_Parameters...>> _callers = {};
+  State                                                _state   = {};
 
- public:
-  using Handler = Handler<_Parameters...>;
-
- private:
-  std::vector<std::weak_ptr<FunctionType>> _callers = {};
-
- public:
-  void Add(std::weak_ptr<FunctionType> function)
+  void Fire(_Parameters... parameters)
   {
-    _callers.push_back(function);
+    static std::vector<std::size_t> remove_indices;
+    for (std::size_t i = 0; i < _callers.size() && !_state.IsSkipping(); ++i)
+    {
+      auto& caller = _callers[i];
+      if (caller.valid)
+      {
+        caller.function(std::move(parameters)...);
+      }
+      else
+      {
+        remove_indices.push_back(i);
+      }
+    }
+    if (!remove_indices.empty())
+    {
+      for (auto it = remove_indices.rbegin(); it != remove_indices.rend(); ++it)
+      {
+        _callers.erase(_callers.begin() + *it);
+      }
+      remove_indices.clear();
+    }
+  }
+
+ protected:
+  virtual void PreFire(State& state, _Parameters... parameters) {}
+  virtual void PostFire(State& state, _Parameters... parameters) {}
+
+ public:
+  template<class F>
+    requires(UD::Concept::Invocable<F, _Parameters...>)
+  detail::Invalidator Add(F function)
+  {
+    detail::EventConnection<_Parameters...> connection(std::bind_front(
+        [](auto function, auto&&... ts)
+        {
+          function(std::forward<decltype(ts)>(ts)...);
+        },
+        function));
+    detail::Invalidator ret{connection.valid};
+    _callers.push_back(std::move(connection));
+    return ret;
+  }
+  template<class F>
+    requires(UD::Concept::Invocable<F, State&, _Parameters...>)
+  detail::Invalidator Add(F function)
+  {
+    return Add(std::bind_front(std::move(function), std::ref(_state)));
   }
 
   ~Event() override       = default;
@@ -91,50 +198,22 @@ class Event
 
   void operator()(_Parameters... parameters)
   {
-    // TODO: Define Event struct that contains parameters for
-    // Handler<Event<Parameters...>>
-    //       Add another vector with Handler<Event<Parameters...>>
-    //       Create struct in this function and pass to all handlers from both
-    //       vectors Will require order-keeping between two vectors (maybe a 3rd
-    //       with alternating counters?)
-
-    static std::deque<std::vector<std::weak_ptr<FunctionType>>::iterator> its;
-    for (auto it = _callers.begin(); it != _callers.end(); ++it)
-    {
-      if (auto locked = it->lock())
-      {
-        (*locked)(parameters...);
-      }
-      else
-      {
-        its.push_back(it);
-      }
-    }
-    if (!its.empty())
-    {
-      for (auto it = its.rbegin(); it != its.rend(); ++it)
-      {
-        _callers.erase(*it);
-      }
-      its.clear();
-    }
+    _state.Clear();
+    PreFire(_state, parameters...);
+    Fire(parameters...);
+    PostFire(_state, std::move(parameters)...);
   }
 };
-
-struct FunctionHolder
+template<class... _Parameters>
+class HandlerBase
+    : public UD::Interface::Interface<HandlerBase<_Parameters...>,
+                                      UD::Interface::SimpleModifiers>
 {
-  virtual ~FunctionHolder() = default;
-};
-template<class... Ts>
-struct FunctionHolderSpecific : public FunctionHolder
-{
-  std::shared_ptr<std::function<void(Ts...)>> function;
+  using FunctionType = std::function<void(_Parameters...)>;
 
-  FunctionHolderSpecific(std::shared_ptr<std::function<void(Ts...)>> func)
-      : function{func}
-  {
-  }
-  ~FunctionHolderSpecific() override = default;
+  FunctionType                     _function     = {};
+  std::vector<detail::Invalidator> _invalidators = {};
+  bool                             _enabled      = true;
 };
 template<class... _Parameters>
 class Handler
@@ -142,34 +221,42 @@ class Handler
                                       UD::Interface::SimpleModifiers>
 {
   using FunctionType = std::function<void(_Parameters...)>;
-  template<class T>
-  using MemberFunctionType = std::function<void (T::*)(_Parameters...)>;
 
-  FunctionType                                 _function = {};
-  std::vector<std::unique_ptr<FunctionHolder>> _callers  = {};
-  bool                                         _enabled  = true;
+  FunctionType                     _function     = {};
+  std::vector<detail::Invalidator> _invalidators = {};
+  bool                             _enabled      = true;
 
-  void Run(_Parameters... parameters)
+  template<class... Ts>
+  void Run(Ts&&... parameters)
   {
     if (_enabled)
     {
-      _function(parameters...);
+      _function(std::forward<Ts>(parameters)...);
     }
   }
-  template<class F, class... Ts>
-    requires UD::Concept::Callable < F,
-        std::tuple<_Parameters...>(std::tuple<Ts...>)
-  > void RunAdaptedTuple(F func, std::tuple<Ts...> parameters)
+  template<class... Ts>
+  struct HasState : public std::false_type
   {
-    std::apply(&Handler::Run,
-               std::tuple_cat(std::tuple(this), func(parameters)));
+  };
+  template<std::same_as<State&> S, class... Ts>
+  struct HasState<S, Ts...> : public std::true_type
+  {
+  };
+  template<class F, class... Ts>
+    requires(!HasState<_Parameters...>::value)
+  void RunAdapted(F func, Ts&&... parameters)
+  {
+    std::apply(&Handler::Run<_Parameters...>,
+               std::tuple_cat(std::tuple(this),
+                              func(std::forward<Ts>(parameters)...)));
   }
   template<class F, class... Ts>
-    requires UD::Concept::Callable < F, std::tuple<_Parameters...>(Ts...)
-  > void RunAdapted(F func, Ts... parameters)
+    requires(HasState<_Parameters...>::value)
+  void RunAdapted(F func, State& state, Ts&&... parameters)
   {
-    std::apply(&Handler::Run,
-               std::tuple_cat(std::tuple(this), func(parameters...)));
+    std::apply(&Handler::Run<_Parameters...>,
+               std::tuple_cat(std::tuple<Handler*, State&>(this, state),
+                              func(std::forward<Ts>(parameters)...)));
   }
 
  public:
@@ -186,8 +273,8 @@ class Handler
       : _function{std::bind_front(function, type)}
   {
   }
-  template<std::size_t _Size>
-  void operator()(std::array<Event<_Parameters...>&, _Size> events)
+  template<std::size_t _Size, class _EventType>
+  void operator()(std::array<_EventType&, _Size> events)
   {
     for (auto& e : events)
     {
@@ -195,49 +282,22 @@ class Handler
     }
   }
   template<class... Ts>
-  void operator()(Event<_Parameters...>& e)
+  void operator()(Event<Ts...>& e)
   {
-    auto caller = std::make_unique<FunctionHolderSpecific<_Parameters...>>(
-        std::make_shared<FunctionType>(std::bind_front(&Handler::Run, this)));
-    e.Add(caller->function);
-    _callers.push_back(std::move(caller));
+    _invalidators.push_back(
+        e.Add(std::bind_front(&Handler::Run<_Parameters...>, this)));
   }
   template<class F, class... Ts>
-    requires UD::Concept::Callable < F, std::tuple<_Parameters...>(Ts...)
-  > &&(
-      !UD::Concept::Callable<F,
-                             std::tuple<_Parameters...>(std::tuple<Ts...>)>)void
-      operator()(Event<Ts...>& e, F adaptor_function)
+  void operator()(Event<Ts...>& e, F adaptor_function)
   {
-    auto caller = std::make_unique<FunctionHolderSpecific<Ts...>>(
-        std::make_shared<std::function<void(Ts...)>>(
-            std::bind_front(&Handler::RunAdapted<F, Ts...>,
-                            this,
-                            adaptor_function)));
-    e.Add(caller->function);
-    _callers.push_back(std::move(caller));
-  }
-  template<class F, class... Ts>
-    requires UD::Concept::Callable < F,
-        std::tuple<_Parameters...>(std::tuple<Ts...>)
-  > void operator()(Event<Ts...>& e, F adaptor_function)
-  {
-    auto caller = std::make_unique<FunctionHolderSpecific<Ts...>>(
-        std::make_shared<std::function<void(Ts...)>>(std::bind_front(
-            [](Handler* h, F f, Ts... ts)
-            {
-              static std::function<void(std::tuple<Ts...>)> func
-                  = std::bind_front(&Handler::RunAdaptedTuple<F, Ts...>, h, f);
-              func(std::tuple<Ts...>(ts...));
-            },
-            this,
-            adaptor_function)));
-    e.Add(caller->function);
-    _callers.push_back(std::move(caller));
+    _invalidators.push_back(
+        e.Add(std::bind_front(&Handler::RunAdapted<F, Ts...>,
+                              this,
+                              adaptor_function)));
   }
   void operator()()
   {
-    _callers.clear();
+    _invalidators.clear();
   }
   void Reset()
   {
@@ -260,19 +320,7 @@ class Handler
   {
     Enable(false);
   }
-};
-// TODO: Same as Handler<_Parameters...> but handles params and an event object
-// with
-//       event functions and data (like Quit (or skip), Count, custom data,
-//       etc...) instead of only handling params.
-// template<class... _Parameters>
-// struct Handler<Event<_Parameters...>>
-//    : public UD::Interface::Interface<Handler<_Parameters...>,
-//                                      UD::Pack::Pack<Handler<_Parameters...>>,
-//                                      UD::Interface::SimpleModifiers>
-//{
-//  using Handler::Super::Super;
-//};
+};  // namespace UD::Event
 
 template<class... _Parameters>
 class Queue
