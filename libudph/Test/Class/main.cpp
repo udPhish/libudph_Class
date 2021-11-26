@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -58,24 +59,25 @@ void TestOp(Ts... ts)
   static int val = 0;
   val += 1;
 }
+template<class... Ts>
+void caller(Ts&&... ts)
+{
+  TestOp<Ts...>(std::forward<Ts>(ts)...);
+}
 int main()
 {
-  // callme<int, char>();
-  UD::Event::Event<int, char>                e;
-  UD::Event::Handler<UD::Event::State&, int> h1(
-      &TestOp<UD::Event::State&, int>);
-  UD::Event::Handler<int, char>                    h2(&TestOp<int, char>);
-  UD::Event::Handler<UD::Event::State&, int, char> h3(
-      &TestOp<UD::Event::State&, int, char>);
+  UD::Event::Event<int>   e;
+  UD::Event::Handler<UD::Event::State&, int> h1{&TestOp<UD::Event::State&,int>};
 
-  // h2(e);
-  h1(e,
-     [](int&& i, char&& c)
-     {
-       return std::tuple<int>(std::forward<char>(c));
-     });
-  // h3(e);
-
+  h1(e);
   time_event(e);
-  time_op<int, char>(&TestOp<int, char>);
+  h1();
+  h1(e,
+     [](int&& l)
+     {
+       return std::tuple<int>(std::forward<int>(l));
+     });
+  time_event(e);
+  h1();
+  time_op<int>(&caller<int>);
 }

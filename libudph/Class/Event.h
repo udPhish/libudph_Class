@@ -120,12 +120,22 @@ struct EventConnection
 };
 struct Invalidator
 {
+  //TODO: Find better way to reference count... Using unnecessary bool* here.
+  std::shared_ptr<bool> _count = std::make_shared<bool>(true);
   std::shared_ptr<bool> _valid = nullptr;
+
   Invalidator(std::shared_ptr<bool> valid) : _valid{valid} {}
   ~Invalidator()
   {
-    *_valid = false;
+    if (_valid)
+    {
+      *_valid = _count && _count.use_count() > 1;
+    }
   }
+  Invalidator(const Invalidator& other) = default;
+  Invalidator(Invalidator&&) noexcept   = default;
+  auto operator=(const Invalidator&) -> Invalidator& = default;
+  auto operator=(Invalidator&&) noexcept -> Invalidator& = default;
 };
 
 }  // namespace detail
@@ -143,7 +153,7 @@ class Event
     for (std::size_t i = 0; i < _callers.size() && !_state.IsSkipping(); ++i)
     {
       auto& caller = _callers[i];
-      if (caller.valid)
+      if (*caller.valid)
       {
         caller.function(std::move(parameters)...);
       }
@@ -171,21 +181,24 @@ class Event
     requires(UD::Concept::Invocable<F, _Parameters...>)
   detail::Invalidator Add(F function)
   {
-    detail::EventConnection<_Parameters...> connection(std::bind_front(
-        [](auto function, auto&&... ts)
+    detail::EventConnection<_Parameters...> connection(
+        [function](auto&&... ts) mutable
         {
           function(std::forward<decltype(ts)>(ts)...);
-        },
-        function));
+        });
     detail::Invalidator ret{connection.valid};
     _callers.push_back(std::move(connection));
-    return ret;
+    return std::move(ret);
   }
   template<class F>
     requires(UD::Concept::Invocable<F, State&, _Parameters...>)
   detail::Invalidator Add(F function)
   {
-    return Add(std::bind_front(std::move(function), std::ref(_state)));
+    return Add(
+        [this, function](_Parameters&&... ps) mutable
+        {
+          function(this->_state, std::forward<decltype(ps)>(ps)...);
+        });
   }
 
   ~Event() override       = default;
@@ -222,7 +235,7 @@ class Handler
 {
   using FunctionType = std::function<void(_Parameters...)>;
 
-  FunctionType                     _function     = {};
+  FunctionType                     _function     = [](_Parameters...) {};
   std::vector<detail::Invalidator> _invalidators = {};
   bool                             _enabled      = true;
 
@@ -244,19 +257,25 @@ class Handler
   };
   template<class F, class... Ts>
     requires(!HasState<_Parameters...>::value)
-  void RunAdapted(F func, Ts&&... parameters)
+  auto GenerateAdaptedRun(F func)
   {
-    std::apply(&Handler::Run<_Parameters...>,
-               std::tuple_cat(std::tuple(this),
-                              func(std::forward<Ts>(parameters)...)));
+    return [this, func](Ts&&... ts) mutable
+    {
+      std::apply(&Handler::Run<_Parameters...>,
+                 std::tuple_cat(std::tuple<Handler*>(this),
+                                func(std::forward<Ts>(ts)...)));
+    };
   }
   template<class F, class... Ts>
     requires(HasState<_Parameters...>::value)
-  void RunAdapted(F func, State& state, Ts&&... parameters)
+  auto GenerateAdaptedRun(F func)
   {
-    std::apply(&Handler::Run<_Parameters...>,
-               std::tuple_cat(std::tuple<Handler*, State&>(this, state),
-                              func(std::forward<Ts>(parameters)...)));
+    return [this, func](State& state, Ts&&... ts) mutable
+    {
+      std::apply(&Handler::Run<_Parameters...>,
+                 std::tuple_cat(std::tuple<Handler*, State&>(this, state),
+                                func(std::forward<Ts>(ts)...)));
+    };
   }
 
  public:
@@ -270,7 +289,10 @@ class Handler
   Handler(FunctionType function) : _function{std::move(function)} {}
   template<class T>
   Handler(void (T::*function)(_Parameters...), T* type)
-      : _function{std::bind_front(function, type)}
+      : _function{[type, function](_Parameters&&... ps) mutable
+                  {
+                    type->function(std::forward<_Parameters>(ps)...);
+                  }}
   {
   }
   template<std::size_t _Size, class _EventType>
@@ -284,16 +306,17 @@ class Handler
   template<class... Ts>
   void operator()(Event<Ts...>& e)
   {
-    _invalidators.push_back(
-        e.Add(std::bind_front(&Handler::Run<_Parameters...>, this)));
+    _invalidators.push_back(e.Add(
+        [this](_Parameters&&... ps) mutable
+        {
+          this->Run<_Parameters...>(std::forward<_Parameters>(ps)...);
+        }));
   }
   template<class F, class... Ts>
   void operator()(Event<Ts...>& e, F adaptor_function)
   {
     _invalidators.push_back(
-        e.Add(std::bind_front(&Handler::RunAdapted<F, Ts...>,
-                              this,
-                              adaptor_function)));
+        e.Add(GenerateAdaptedRun<F, Ts...>(std::move(adaptor_function))));
   }
   void operator()()
   {
