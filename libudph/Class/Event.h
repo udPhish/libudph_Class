@@ -341,7 +341,10 @@ class Handler
   template<class T>
   void Reset(void (T::*function)(_Parameters...), T* type)
   {
-    _function = std::bind_front(function, type);
+    _function = [type, function](_Parameters... ps)
+    {
+      (type->*function)(std::move(ps)...);
+    };
   }
   void Enable(bool enable = true)
   {

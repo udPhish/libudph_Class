@@ -15,7 +15,7 @@ struct conv
   }
 };
 
-static const std::size_t iterations = 10000000;
+static const std::size_t iterations = 100000000;
 template<class... Ts>
 void time_event(UD::Event::Event<Ts...>& e)
 {
