@@ -24,12 +24,38 @@ void time_event(UD::Event::Event<Ts...>& e)
           std::chrono::high_resolution_clock::now().time_since_epoch());
   for (std::size_t i = 0; i < iterations; ++i)
   {
-    e(Ts{}...);
+    e(Ts{1}...);
   }
   std::chrono::milliseconds end
       = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::high_resolution_clock::now().time_since_epoch());
-  std::cout << "Ev Time: " << (end - start).count() << std::endl;
+  std::cout << "E Time: " << (end - start).count() << std::endl;
+}
+template<class... Ts>
+void time_queue(UD::Event::Queue<Ts...>& e)
+{
+  std::chrono::milliseconds start
+      = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::high_resolution_clock::now().time_since_epoch());
+  e.Process();
+  //e.ProcessWhile(
+  //    [start]()
+  //    {
+  //      static std::chrono::milliseconds end;
+  //      end = std::chrono::duration_cast<std::chrono::milliseconds>(
+  //          std::chrono::high_resolution_clock::now().time_since_epoch());
+  //      return (end - start).count() < 100;
+  //    });
+  //e.ProcessIf(
+  //    []()
+  //    {
+  //    static int s = 0;
+  //    return (bool)(s++%4);
+  //    });
+  std::chrono::milliseconds end
+      = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::high_resolution_clock::now().time_since_epoch());
+  std::cout << "Q Time: " << (end - start).count() << std::endl;
 }
 template<class... Ts>
 void time_op(UD::Concept::Invocable<Ts...> auto f)
@@ -44,7 +70,7 @@ void time_op(UD::Concept::Invocable<Ts...> auto f)
   std::chrono::milliseconds end
       = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::high_resolution_clock::now().time_since_epoch());
-  std::cout << "Op Time: " << (end - start).count() << std::endl;
+  std::cout << "O Time: " << (end - start).count() << std::endl;
 }
 template<class... Ts>
 void callme()
@@ -53,11 +79,12 @@ void callme()
   static_assert(UD::Concept::Callable<decltype(func), void(int&, Ts...)>);
 }
 
+static int val = 0;
 template<class... Ts>
 void TestOp(Ts... ts)
 {
-  static int val = 0;
-  val += 1;
+  if (val >= 0)
+    val += 1;
 }
 template<class... Ts>
 void caller(Ts&&... ts)
@@ -66,8 +93,10 @@ void caller(Ts&&... ts)
 }
 int main()
 {
-  UD::Event::Event<int>   e;
-  UD::Event::Handler<UD::Event::State&, int> h1{&TestOp<UD::Event::State&,int>};
+  UD::Event::Event<int>                      e;
+  UD::Event::Queue<int>                      q;
+  UD::Event::Handler<UD::Event::State&, int> h1(
+      &TestOp<UD::Event::State&, int>);
 
   h1(e);
   time_event(e);
@@ -79,5 +108,19 @@ int main()
      });
   time_event(e);
   h1();
+  q(e);
+  h1(q);
+  time_event(e);
+  std::cout << q.Size() << std::endl;
+  time_queue(q);
   time_op<int>(&caller<int>);
+  std::cout << q.Size() << std::endl;
+  //q.Purge(
+  //    [](int i)
+  //    {
+  //      return i == 1;
+  //    });
+  q.Purge();
+  std::cout << q.Size() << std::endl;
+  std::cout << val << std::endl;
 }

@@ -2,6 +2,7 @@
 #include <array>
 #include <deque>
 #include <functional>
+#include <list>
 #include <memory>
 #include <ranges>
 #include <tuple>
@@ -104,6 +105,9 @@ class State
     _data = nullptr;
   }
 };
+// TODO: Add conditions to UD::Event and/or UD::Handler... Maybe?
+//       Performance hit should be mitigated by checking if conditions are
+//       empty. But is it necessary?
 template<class... _Parameters>
 class Event;
 
@@ -120,7 +124,7 @@ struct EventConnection
 };
 struct Invalidator
 {
-  //TODO: Find better way to reference count... Using unnecessary bool* here.
+  // TODO: Find better way to reference count... Using unnecessary bool* here.
   std::shared_ptr<bool> _count = std::make_shared<bool>(true);
   std::shared_ptr<bool> _valid = nullptr;
 
@@ -144,6 +148,10 @@ class Event
     : public UD::Interface::Interface<Event<_Parameters...>,
                                       UD::Interface::SimpleModifiers>
 {
+ public:
+  using Handler = Handler<State&, _Parameters...>;
+
+ private:
   std::vector<detail::EventConnection<_Parameters...>> _callers = {};
   State                                                _state   = {};
 
@@ -291,7 +299,7 @@ class Handler
   Handler(void (T::*function)(_Parameters...), T* type)
       : _function{[type, function](_Parameters&&... ps) mutable
                   {
-                    type->function(std::forward<_Parameters>(ps)...);
+                    (type->*function)(std::forward<_Parameters>(ps)...);
                   }}
   {
   }
@@ -343,7 +351,7 @@ class Handler
   {
     Enable(false);
   }
-};  // namespace UD::Event
+};
 
 template<class... _Parameters>
 class Queue
@@ -352,56 +360,33 @@ class Queue
           UD::Pack::Pack<Event<_Parameters...>, Handler<_Parameters...>>,
           UD::Interface::SimpleModifiers>
 {
-  using Handler<_Parameters...>::Reset;
+  using ValueTuple = std::tuple<_Parameters...>;
 
-  using ValueTuple             = std::tuple<_Parameters...>;
-  using EmptyConditionFunction = std::function<bool()>;
-  using ValueConditionFunction = std::function<bool(_Parameters...)>;
-
-  std::deque<ValueTuple>              _queued_event_values;
-  std::vector<EmptyConditionFunction> _empty_conditions;
-  std::vector<ValueConditionFunction> _value_conditions;
+  std::list<ValueTuple> _queued_event_values;
 
   void Push(_Parameters... parameters)
   {
-    _queued_event_values.push_back(ValueTuple{parameters...});
+    _queued_event_values.push_back(ValueTuple{std::move(parameters)...});
   }
   void ProcessTuple(ValueTuple& values)
   {
-    static auto bound_func
-        = std::bind_front(&Event<_Parameters...>::operator(), this);
-    std::apply(bound_func, values);
+    std::apply(
+        [this](auto&&... ps)
+        {
+          this->Event<_Parameters...>::operator()(
+              std::forward<decltype(ps)>(ps)...);
+        },
+        values);
   }
-  auto TestTuple(ValueTuple& values) -> bool
+  template<UD::Concept::Callable<bool(_Parameters...)> T>
+  bool ProcessCondition(T condition, ValueTuple& tup)
   {
-    static auto bound_func = std::bind_front(&Queue::TestConditions, this);
-    return std::apply(bound_func, values);
+    return std::apply(condition, tup);
   }
-  auto TestEmptyConditions() -> bool
+  template<UD::Concept::Callable<bool()> T>
+  bool ProcessCondition(T condition, ValueTuple& tup)
   {
-    for (auto& condition : _empty_conditions)
-    {
-      if (!condition())
-      {
-        return false;
-      }
-    }
-    return true;
-  }
-  auto TestValueConditions(_Parameters... parameters) -> bool
-  {
-    for (auto& condition : _value_conditions)
-    {
-      if (!condition(parameters...))
-      {
-        return false;
-      }
-    }
-    return true;
-  }
-  auto TestConditions(_Parameters... parameters) -> bool
-  {
-    return TestEmptyConditions() && TestValueConditions(parameters...);
+    return condition();
   }
 
  public:
@@ -418,56 +403,82 @@ class Queue
 
   using Handler<_Parameters...>::operator();
 
-  void ProcessNextSkipConditions()
-  {
-    ProcessSkipConditions(1);
-  }
   void ProcessNext()
   {
     Process(1);
   }
-  void ProcessSkipConditions(std::size_t max = 0)
+  std::size_t Size() const
   {
-    while (!_queued_event_values.empty())
-    {
-      ProcessTuple(_queued_event_values.front());
-      _queued_event_values.pop_front();
-      if (max == 1)
-      {
-        break;
-      }
-      else if (max != 0)
-      {
-        max--;
-      }
-    }
+    return _queued_event_values.size();
   }
   void Process(std::size_t max = 0)
   {
-    while (!_queued_event_values.empty())
+    if (!max)
     {
-      if (TestTuple(_queued_event_values.front()))
-      {
-        ProcessTuple(_queued_event_values.front());
-      }
-      _queued_event_values.pop_front();
-      if (max == 1)
-      {
-        break;
-      }
-      else if (max != 0)
-      {
-        max--;
-      }
+      ProcessWhile(
+          []()
+          {
+            return true;
+          });
+    }
+    else
+    {
+      ProcessWhile(
+          [max]()
+          {
+            static std::size_t val = max;
+            return val-- != 0;
+          });
     }
   }
-  void AddCondition(EmptyConditionFunction function)
+  template<class T>
+  void ProcessWhile(T&& condition)
   {
-    _empty_conditions.push_back(function);
+    ProcessWhileIf(std::forward<T>(condition),
+                   []()
+                   {
+                     return true;
+                   });
   }
-  void AddCondition(ValueConditionFunction function)
+  template<class T>
+  void ProcessIf(T&& condition)
   {
-    _value_conditions.push_back(function);
+    ProcessWhileIf(
+        []()
+        {
+          return true;
+        },
+        std::forward<T>(condition));
+  }
+  template<class T, class U>
+  void ProcessWhileIf(T while_condition, U if_condition)
+  {
+    for (auto it = _queued_event_values.begin();
+         it != _queued_event_values.end()
+         && ProcessCondition(while_condition, *it);)
+    {
+      if (!ProcessCondition(if_condition, *it))
+      {
+        ++it;
+        continue;
+      }
+      ProcessTuple(*it);
+      it = _queued_event_values.erase(it);
+    }
+  }
+
+  template<UD::Concept::Callable<bool(_Parameters...)> T>
+  void Purge(T condition)
+  {
+    std::erase_if(_queued_event_values,
+                  [condition](std::tuple<_Parameters...> tup)
+                  {
+                    return std::apply(condition, tup);
+                  });
+  }
+  void Purge()
+  {
+    _queued_event_values.clear();
   }
 };
 template<class... _Parameters>
