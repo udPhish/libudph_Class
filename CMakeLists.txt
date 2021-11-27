@@ -18,6 +18,7 @@ TARGET_APPEND_HDR(
 	"libudph/Class/Interface.h"
 	"libudph/Class/SFINAE.h"
 	"libudph/Class/Traits.h"
+	"libudph/Class/Pack.h"
 )
 
 TARGET_LINK(Class)
