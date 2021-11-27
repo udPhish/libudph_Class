@@ -15,7 +15,7 @@ struct conv
   }
 };
 
-static const std::size_t iterations = 100000000;
+static const std::size_t iterations = 10000000;
 template<class... Ts>
 void time_event(UD::Event::Event<Ts...>& e)
 {
@@ -38,20 +38,20 @@ void time_queue(UD::Event::Queue<Ts...>& e)
       = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::high_resolution_clock::now().time_since_epoch());
   e.Process();
-  //e.ProcessWhile(
-  //    [start]()
-  //    {
-  //      static std::chrono::milliseconds end;
-  //      end = std::chrono::duration_cast<std::chrono::milliseconds>(
-  //          std::chrono::high_resolution_clock::now().time_since_epoch());
-  //      return (end - start).count() < 100;
-  //    });
-  //e.ProcessIf(
-  //    []()
-  //    {
-  //    static int s = 0;
-  //    return (bool)(s++%4);
-  //    });
+  // e.ProcessWhile(
+  //     [start]()
+  //     {
+  //       static std::chrono::milliseconds end;
+  //       end = std::chrono::duration_cast<std::chrono::milliseconds>(
+  //           std::chrono::high_resolution_clock::now().time_since_epoch());
+  //       return (end - start).count() < 100;
+  //     });
+  // e.ProcessIf(
+  //     []()
+  //     {
+  //     static int s = 0;
+  //     return (bool)(s++%4);
+  //     });
   std::chrono::milliseconds end
       = std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::high_resolution_clock::now().time_since_epoch());
@@ -115,12 +115,82 @@ int main()
   time_queue(q);
   time_op<int>(&caller<int>);
   std::cout << q.Size() << std::endl;
-  //q.Purge(
-  //    [](int i)
-  //    {
-  //      return i == 1;
-  //    });
+  // q.Purge(
+  //     [](int i)
+  //     {
+  //       return i == 1;
+  //     });
   q.Purge();
   std::cout << q.Size() << std::endl;
   std::cout << val << std::endl;
+
+  UD::Event::Event<>   ee;
+  UD::Event::Handler<> hh1(
+      []()
+      {
+        std::cout << "P1: " << -1 << std::endl;
+      });
+  UD::Event::Handler<> hh12(
+      []()
+      {
+        std::cout << "P12: " << -1 << std::endl;
+      });
+  UD::Event::Handler<> hh2(
+      []()
+      {
+        std::cout << "P: " << -100 << std::endl;
+      });
+  UD::Event::Handler<> hh3(
+      []()
+      {
+        std::cout << "P3: " << 1 << std::endl;
+      });
+  UD::Event::Handler<> hh32(
+      []()
+      {
+        std::cout << "P32: " << 1 << std::endl;
+      });
+  UD::Event::Handler<> hh4(
+      []()
+      {
+        std::cout << "P: " << 2708 << std::endl;
+      });
+  UD::Event::Handler<> hh5(
+      []()
+      {
+        std::cout << "P: " << 0 << std::endl;
+      });
+  hh2(ee, -100);
+  hh12(ee, -1);
+  hh1(ee, -1);
+  hh32(ee, 1);
+  hh3(ee, 1);
+  hh4(ee, 2708);
+  hh5(ee, 0);
+  ee();
+ 
+  //UD::Event::Chain<> c1;
+  //UD::Event::Chain<> c2;
+  //UD::Event::Chain<> c3;
+  //UD::Event::Chain<> c4;
+  //c2(c1);
+  //c3(c2);
+  //c4(c3);
+  //UD::Event::Handler<> ch1{[](){std::cout << "ch1" << std::endl;}};
+  //UD::Event::Handler<> ch2{[]()
+  //                         {
+  //                           std::cout << "ch2" << std::endl;
+  //                         }};
+  //UD::Event::Handler<> ch3{[]()
+  //                         {
+  //                           std::cout << "ch3" << std::endl;
+  //                         }};
+  //UD::Event::Handler<> ch4{[]()
+  //                         {
+  //                           std::cout << "ch4" << std::endl;
+  //                         }};
+  //ch1(c1);
+  //ch2(c2);
+  //ch3(c3);
+  //ch4(c4);
 }

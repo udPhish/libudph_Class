@@ -3,6 +3,7 @@
 #include <deque>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
 #include <ranges>
 #include <tuple>
@@ -119,8 +120,8 @@ namespace detail
 template<class... _Parameters>
 struct EventConnection
 {
-  std::function<void(_Parameters&&...)> function = [](_Parameters&&...) {};
-  std::shared_ptr<bool>                 valid    = std::make_shared<bool>(true);
+  std::function<void(_Parameters...)> function = [](_Parameters...) {};
+  std::shared_ptr<bool>               valid    = std::make_shared<bool>(true);
 };
 struct Invalidator
 {
@@ -143,27 +144,47 @@ struct Invalidator
 };
 
 }  // namespace detail
+
+struct PriorityBase
+{
+  virtual ~PriorityBase() = default;
+
+ protected:
+  enum class Priority
+  {
+    FIRST,
+    LAST
+  };
+};
 template<class... _Parameters>
 class Event
     : public UD::Interface::Interface<Event<_Parameters...>,
+                                      UD::Pack::Pack<PriorityBase>,
                                       UD::Interface::SimpleModifiers>
 {
  public:
   using Handler = Handler<State&, _Parameters...>;
 
  private:
-  std::vector<detail::EventConnection<_Parameters...>> _callers = {};
-  State                                                _state   = {};
+  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
+      _positive_callers = {};
+  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
+                                                      _negative_callers = {};
+  std::deque<detail::EventConnection<_Parameters...>> _zero_callers     = {};
+  std::deque<detail::EventConnection<_Parameters...>> _first_callers    = {};
+  std::deque<detail::EventConnection<_Parameters...>> _last_callers     = {};
+  State                                               _state            = {};
 
-  void Fire(_Parameters... parameters)
+  void FireCallers(_Parameters... parameters,
+                   std::deque<detail::EventConnection<_Parameters...>>& callers)
   {
-    static std::vector<std::size_t> remove_indices;
-    for (std::size_t i = 0; i < _callers.size() && !_state.IsSkipping(); ++i)
+    static std::deque<std::size_t> remove_indices;
+    for (std::size_t i = 0; i < callers.size() && !_state.IsSkipping(); ++i)
     {
-      auto& caller = _callers[i];
+      auto& caller = callers[i];
       if (*caller.valid)
       {
-        caller.function(std::move(parameters)...);
+        caller.function(parameters...);
       }
       else
       {
@@ -174,10 +195,29 @@ class Event
     {
       for (auto it = remove_indices.rbegin(); it != remove_indices.rend(); ++it)
       {
-        _callers.erase(_callers.begin() + *it);
+        callers.erase(callers.begin() + *it);
       }
       remove_indices.clear();
     }
+  }
+  void Fire(_Parameters... parameters)
+  {
+    for (auto& callers : _positive_callers)
+    {
+      FireCallers(parameters..., callers.second);
+    }
+    FireCallers(parameters..., _zero_callers);
+    for (auto& callers : _negative_callers)
+    {
+      FireCallers(parameters..., callers.second);
+    }
+  }
+  template<class... Ts>
+  void FireSequence(Ts&&... parameters)
+  {
+    PreFire(_state, parameters...);
+    Fire(parameters...);
+    PostFire(_state, std::forward<Ts>(parameters)...);
   }
 
  protected:
@@ -187,7 +227,7 @@ class Event
  public:
   template<class F>
     requires(UD::Concept::Invocable<F, _Parameters...>)
-  detail::Invalidator Add(F function)
+  detail::Invalidator Add(F function, int priority = 0)
   {
     detail::EventConnection<_Parameters...> connection(
         [function](auto&&... ts) mutable
@@ -195,18 +235,68 @@ class Event
           function(std::forward<decltype(ts)>(ts)...);
         });
     detail::Invalidator ret{connection.valid};
-    _callers.push_back(std::move(connection));
+    if (priority < 0)
+    {
+      _negative_callers
+          .insert(
+              {priority, std::deque<detail::EventConnection<_Parameters...>>{}})
+          .first->second.push_front(std::move(connection));
+    }
+    else if (priority > 0)
+    {
+      _positive_callers
+          .insert(
+              {priority, std::deque<detail::EventConnection<_Parameters...>>{}})
+          .first->second.push_back(std::move(connection));
+    }
+    else
+    {
+      _zero_callers.push_back(std::move(connection));
+    }
     return std::move(ret);
   }
   template<class F>
     requires(UD::Concept::Invocable<F, State&, _Parameters...>)
-  detail::Invalidator Add(F function)
+  detail::Invalidator Add(F function, int priority = 0)
   {
     return Add(
         [this, function](_Parameters&&... ps) mutable
         {
           function(this->_state, std::forward<decltype(ps)>(ps)...);
+        },
+        priority);
+  }
+  template<class F>
+    requires(UD::Concept::Invocable<F, _Parameters...>)
+  detail::Invalidator Add(F function, typename Event::Priority priority)
+  {
+    detail::EventConnection<_Parameters...> connection(
+        [function](auto&&... ts) mutable
+        {
+          function(std::forward<decltype(ts)>(ts)...);
         });
+    detail::Invalidator ret{connection.valid};
+    switch (priority)
+    {
+      case Event::Priority::FIRST:
+        _first_callers.push_back(std::move(connection));
+        break;
+      case Event::Priority::LAST:
+        _last_callers.push_front(std::move(connection));
+        break;
+    }
+    return std::move(ret);
+  }
+  template<class F>
+    requires(UD::Concept::Invocable<F, State&, _Parameters...>)
+  detail::Invalidator Add(F function, typename Event::Priority priority)
+  {
+    return Add(
+        [this, function](_Parameters&&... ps) mutable
+        {
+          function(this->_state, std::forward<decltype(ps)>(ps)...);
+        },
+        priority);
   }
 
   ~Event() override       = default;
@@ -217,28 +307,24 @@ class Event
 
   Event() noexcept = default;
 
-  void operator()(_Parameters... parameters)
+  template<class... Ts>
+  void operator()(Ts&&... parameters)
   {
     _state.Clear();
-    PreFire(_state, parameters...);
-    Fire(parameters...);
-    PostFire(_state, std::move(parameters)...);
+    FireSequence(std::forward<Ts>(parameters)...);
   }
-};
-template<class... _Parameters>
-class HandlerBase
-    : public UD::Interface::Interface<HandlerBase<_Parameters...>,
-                                      UD::Interface::SimpleModifiers>
-{
-  using FunctionType = std::function<void(_Parameters...)>;
-
-  FunctionType                     _function     = {};
-  std::vector<detail::Invalidator> _invalidators = {};
-  bool                             _enabled      = true;
+  template<class T, class... Ts>
+    requires(std::same_as<std::remove_reference<T>::type, State>)
+  void operator()(T&& state, Ts&&... parameters)
+  {
+    _state = std::forward<T>(state);
+    FireSequence(std::forward<Ts>(parameters)...);
+  }
 };
 template<class... _Parameters>
 class Handler
     : public UD::Interface::Interface<Handler<_Parameters...>,
+                                      UD::Pack::Pack<PriorityBase>,
                                       UD::Interface::SimpleModifiers>
 {
   using FunctionType = std::function<void(_Parameters...)>;
@@ -303,28 +389,62 @@ class Handler
                   }}
   {
   }
+
+ protected:
   template<std::size_t _Size, class _EventType>
-  void operator()(std::array<_EventType&, _Size> events)
+  void operator()(std::array<_EventType&, _Size> events,
+                  typename Handler::Priority     priority)
   {
     for (auto& e : events)
     {
-      operator()(e);
+      operator()(e, priority);
     }
   }
   template<class... Ts>
-  void operator()(Event<Ts...>& e)
+  void operator()(Event<Ts...>& e, typename Handler::Priority priority)
   {
     _invalidators.push_back(e.Add(
         [this](_Parameters&&... ps) mutable
         {
           this->Run<_Parameters...>(std::forward<_Parameters>(ps)...);
-        }));
+        },
+        priority));
   }
   template<class F, class... Ts>
-  void operator()(Event<Ts...>& e, F adaptor_function)
+  void operator()(Event<Ts...>&              e,
+                  F                          adaptor_function,
+                  typename Handler::Priority priority)
   {
     _invalidators.push_back(
-        e.Add(GenerateAdaptedRun<F, Ts...>(std::move(adaptor_function))));
+        e.Add(GenerateAdaptedRun<F, Ts...>(std::move(adaptor_function)),
+              priority));
+  }
+
+ public:
+  template<std::size_t _Size, class _EventType>
+  void operator()(std::array<_EventType&, _Size> events, int priority = 0)
+  {
+    for (auto& e : events)
+    {
+      operator()(e, priority);
+    }
+  }
+  template<class... Ts>
+  void operator()(Event<Ts...>& e, int priority = 0)
+  {
+    _invalidators.push_back(e.Add(
+        [this](_Parameters&&... ps) mutable
+        {
+          this->Run<_Parameters...>(std::forward<_Parameters>(ps)...);
+        },
+        priority));
+  }
+  template<class F, class... Ts>
+  void operator()(Event<Ts...>& e, F adaptor_function, int priority = 0)
+  {
+    _invalidators.push_back(
+        e.Add(GenerateAdaptedRun<F, Ts...>(std::move(adaptor_function)),
+              priority));
   }
   void operator()()
   {
@@ -453,6 +573,8 @@ class Queue
         },
         std::forward<T>(condition));
   }
+  // TODO: Rethink this function as it is inflexible and too specific.  Maybe
+  // separate out conditions to be specified elsewhere.
   template<class T, class U>
   void ProcessWhileIf(T while_condition, U if_condition)
   {
@@ -488,20 +610,54 @@ template<class... _Parameters>
 struct Chain
     : public Interface::Interface<
           Chain<_Parameters...>,
-          UD::Pack::Pack<Event<_Parameters...>, Handler<_Parameters...>>,
+          UD::Pack::Pack<Event<_Parameters...>,
+                         Handler<State&, _Parameters...>>,
           UD::Interface::SimpleModifiers>
 {
+ private:
+
+ public:
   ~Chain() override       = default;
   Chain(const Chain&)     = default;
   Chain(Chain&&) noexcept = default;
   auto operator=(const Chain&) -> Chain& = default;
   auto operator=(Chain&&) noexcept -> Chain& = default;
 
-  Chain() noexcept = default;
-
-  // TODO: Should not be hiding base members... Requires rethinking inheritance
+  Chain()
+      : Chain::Super{Chain::Constructor<Handler<State&, _Parameters...>>::Call(
+          &Chain::Callback,
+          this)}
+  {
+  }
 
  private:
-  using Event<_Parameters...>::operator();
+  void Callback(State& state, _Parameters... ps)
+  {
+    Event<_Parameters...>::operator()(state, ps...);
+  }
+
+ public:
+  template<std::size_t _Size, class _EventType>
+  void operator()(std::array<_EventType&, _Size> events)
+  {
+    Handler<State&, _Parameters...>::operator()(
+        events,
+        Event<_Parameters...>::Priority::LAST);
+  }
+  template<class... Ts>
+  void operator()(Event<Ts...>& e)
+  {
+    Handler<State&, _Parameters...>::operator()(
+        e,
+        Event<_Parameters...>::Priority::LAST);
+  }
+  template<class F, class... Ts>
+  void operator()(Event<Ts...>& e, F adaptor_function)
+  {
+    Handler<State&, _Parameters...>::operator()(
+        e,
+        std::move(adaptor_function),
+        Event<_Parameters...>::Priority::LAST);
+  }
 };
 }  // namespace UD::Event
