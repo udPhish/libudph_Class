@@ -1,6 +1,9 @@
 #pragma once
 #include <memory>
 #include <type_traits>
+
+#include <libudph/Class/Pack.h>
+
 namespace UD
 {
 namespace SFINAE
@@ -21,6 +24,34 @@ struct all_same
 {
   static_assert(std::conjunction_v<std::is_same<First, Rest>...>);
   using type = First;
+};
+template<class... Ts>
+struct pack_is_same : public std::false_type{};
+
+template<class T, class... Ts, class... Us>
+struct pack_is_same<UD::Pack::Pack<T, Ts...>, UD::Pack::Pack<T, Us...>>
+    : public pack_is_same<UD::Pack::Pack<Ts...>, UD::Pack::Pack<Us...>>
+{
+};
+template<>
+struct pack_is_same<UD::Pack::Pack<>, UD::Pack::Pack<>>
+    : public std::true_type
+{
+};
+template<class... Ts>
+struct pack_is_convertible : public std::false_type
+{
+};
+
+template<class T, class U, class... Ts, class... Us> requires(std::is_convertible<T, U>::value)
+struct pack_is_convertible<UD::Pack::Pack<T, Ts...>, UD::Pack::Pack<U, Us...>>
+    : public pack_is_convertible<UD::Pack::Pack<Ts...>, UD::Pack::Pack<Us...>>
+{
+};
+template<>
+struct pack_is_convertible<UD::Pack::Pack<>, UD::Pack::Pack<>>
+    : public std::true_type
+{
 };
 
 template<class T>

@@ -11,7 +11,9 @@
 #include <utility>
 #include <vector>
 
-#include "Interface.h"
+#include <libudph/Class/Interface.h>
+#include <libudph/Class/SFINAE.h>
+
 namespace UD::Traits
 {
 template<class T>
@@ -55,6 +57,11 @@ namespace detail
 }  // namespace detail
 template<class T, class F>
 concept Callable = detail::CallableHelper<T, F>::value;
+
+template<class T, class U>
+concept PackSameAs = UD::SFINAE::pack_is_same<T, U>::value;
+template<class T, class U>
+concept PackConvertibleTo = UD::SFINAE::pack_is_convertible<T, U>::value;
 }  // namespace UD::Concept
 namespace UD::Concept::Event
 {
@@ -202,6 +209,7 @@ class Event
   }
   void Fire(_Parameters... parameters)
   {
+    FireCallers(parameters..., _first_callers);
     for (auto& callers : _positive_callers)
     {
       FireCallers(parameters..., callers.second);
@@ -211,6 +219,7 @@ class Event
     {
       FireCallers(parameters..., callers.second);
     }
+    FireCallers(parameters..., _last_callers);
   }
   template<class... Ts>
   void FireSequence(Ts&&... parameters)
@@ -308,16 +317,17 @@ class Event
   Event() noexcept = default;
 
   template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
   void operator()(Ts&&... parameters)
   {
     _state.Clear();
     FireSequence(std::forward<Ts>(parameters)...);
   }
-  template<class T, class... Ts>
-    requires(std::same_as<std::remove_reference<T>::type, State>)
-  void operator()(T&& state, Ts&&... parameters)
+  template<class... Ts>
+  void operator()(State state, Ts&&... parameters)
   {
-    _state = std::forward<T>(state);
+    _state = std::move(state);
     FireSequence(std::forward<Ts>(parameters)...);
   }
 };
@@ -614,9 +624,6 @@ struct Chain
                          Handler<State&, _Parameters...>>,
           UD::Interface::SimpleModifiers>
 {
- private:
-
- public:
   ~Chain() override       = default;
   Chain(const Chain&)     = default;
   Chain(Chain&&) noexcept = default;
@@ -637,22 +644,23 @@ struct Chain
   }
 
  public:
+   using Event<_Parameters...>::operator();
   template<std::size_t _Size, class _EventType>
-  void operator()(std::array<_EventType&, _Size> events)
+  void Link(std::array<_EventType&, _Size> events)
   {
     Handler<State&, _Parameters...>::operator()(
         events,
         Event<_Parameters...>::Priority::LAST);
   }
   template<class... Ts>
-  void operator()(Event<Ts...>& e)
+  void Link(Event<Ts...>& e)
   {
     Handler<State&, _Parameters...>::operator()(
         e,
         Event<_Parameters...>::Priority::LAST);
   }
   template<class F, class... Ts>
-  void operator()(Event<Ts...>& e, F adaptor_function)
+  void Link(Event<Ts...>& e, F adaptor_function)
   {
     Handler<State&, _Parameters...>::operator()(
         e,

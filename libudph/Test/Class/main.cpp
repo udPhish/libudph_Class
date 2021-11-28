@@ -6,6 +6,7 @@
 
 #include <libudph/Class/Event.h>
 #include <libudph/Class/Interface.h>
+#include <libudph/Class/SFINAE.h>
 
 struct conv
 {
@@ -15,7 +16,7 @@ struct conv
   }
 };
 
-static const std::size_t iterations = 10000000;
+static const std::size_t iterations = 1000000;
 template<class... Ts>
 void time_event(UD::Event::Event<Ts...>& e)
 {
@@ -168,29 +169,57 @@ int main()
   hh4(ee, 2708);
   hh5(ee, 0);
   ee();
- 
-  //UD::Event::Chain<> c1;
-  //UD::Event::Chain<> c2;
-  //UD::Event::Chain<> c3;
-  //UD::Event::Chain<> c4;
-  //c2(c1);
-  //c3(c2);
-  //c4(c3);
-  //UD::Event::Handler<> ch1{[](){std::cout << "ch1" << std::endl;}};
-  //UD::Event::Handler<> ch2{[]()
-  //                         {
-  //                           std::cout << "ch2" << std::endl;
-  //                         }};
-  //UD::Event::Handler<> ch3{[]()
-  //                         {
-  //                           std::cout << "ch3" << std::endl;
-  //                         }};
-  //UD::Event::Handler<> ch4{[]()
-  //                         {
-  //                           std::cout << "ch4" << std::endl;
-  //                         }};
-  //ch1(c1);
-  //ch2(c2);
-  //ch3(c3);
-  //ch4(c4);
+
+  UD::Event::Event<>                    es;
+  UD::Event::Handler<UD::Event::State&> esh{[](UD::Event::State& state)
+                                            {
+                                              state.Emplace<int>(3);
+                                            }};
+  UD::Event::Handler<UD::Event::State&> esh2{[](UD::Event::State& state)
+                                             {
+                                               std::cout << *state.Get<int>()
+                                                         << std::endl;
+                                             }};
+  esh(es);
+  esh2(es);
+  es();
+
+  UD::Event::Chain<> c1;
+  UD::Event::Chain<> c2;
+  UD::Event::Chain<> c3;
+  UD::Event::Chain<> c4;
+  c2.Link(c1);
+  c3.Link(c2);
+  c4.Link(c3);
+  UD::Event::Handler<UD::Event::State&> ch1{[](UD::Event::State& state)
+                                            {
+                                              state.Emplace<int>(1);
+                                              std::cout << "ch1" << std::endl;
+                                            }};
+  UD::Event::Handler<UD::Event::State&> ch12{[](UD::Event::State& state)
+                                             {
+                                               (*state.Get<int>())++;
+                                               std::cout << "ch12" << std::endl;
+                                             }};
+  UD::Event::Handler<UD::Event::State&> ch2{[](UD::Event::State& state)
+                                            {
+                                              (*state.Get<int>())++;
+                                              std::cout << "ch2" << std::endl;
+                                            }};
+  UD::Event::Handler<UD::Event::State&> ch3{[](UD::Event::State& state)
+                                            {
+                                              (*state.Get<int>())++;
+                                              std::cout << "ch3" << std::endl;
+                                            }};
+  UD::Event::Handler<UD::Event::State&> ch4{[](UD::Event::State& state)
+                                            {
+                                              (*state.Get<int>())++;
+                                              std::cout << "ch4" << std::endl;
+                                            }};
+  ch1(c1, 1);
+  ch2(c2);
+  ch3(c3);
+  ch4(c4);
+  ch12(c1, 89);
+  c1();
 }
