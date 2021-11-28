@@ -8,7 +8,6 @@ int main()
 
   UD::Event::Handler<UD::Event::State&, int> h1{[](UD::Event::State& s, int i)
                                                 {
-                                                  s.Skip();
                                                   std::cout << "h1: " << i
                                                             << std::endl;
                                                 }};
@@ -17,8 +16,13 @@ int main()
                                std::cout << "h2: " << i << std::endl;
                              }};
 
-  h1(e2);
-  h2(e1);
+  e2.AddCondition(
+      []()
+      {
+        return false;
+      });
+  h1(e1);
+  h2(e2);
   e2.Link(e1);
   e1(2);
 }

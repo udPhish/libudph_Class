@@ -113,9 +113,6 @@ class State
     _data = nullptr;
   }
 };
-// TODO: Add conditions to UD::Event and/or UD::Handler... Maybe?
-//       Performance hit should be mitigated by checking if conditions are
-//       empty. But is it necessary?
 template<class... _Parameters>
 class Event;
 
@@ -160,6 +157,7 @@ struct PriorityBase
  protected:
   enum class InternalPriority
   {
+    CONDITION,
     FIRST,
     LAST
   };
@@ -181,6 +179,7 @@ class Event
   std::deque<detail::EventConnection<_Parameters...>> _zero_callers     = {};
   std::deque<detail::EventConnection<_Parameters...>> _first_callers    = {};
   std::deque<detail::EventConnection<_Parameters...>> _last_callers     = {};
+  std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
   State                                               _state            = {};
 
   void FireCallers(_Parameters... parameters,
@@ -210,6 +209,7 @@ class Event
   }
   void Fire(_Parameters... parameters)
   {
+    FireCallers(parameters..., _conditions);
     FireCallers(parameters..., _first_callers);
     for (auto& callers : _positive_callers)
     {
@@ -220,14 +220,7 @@ class Event
     {
       FireCallers(parameters..., callers.second);
     }
-    FireCallers(parameters..., _last_callers);
-  }
-  template<class... Ts>
-  void FireSequence(Ts&&... parameters)
-  {
-    PreFire(_state, parameters...);
-    Fire(parameters...);
-    PostFire(_state, std::forward<Ts>(parameters)...);
+    FireCallers(std::move(parameters)..., _last_callers);
   }
 
   template<class... Ts>
@@ -299,6 +292,9 @@ class Event
       case Event::InternalPriority::LAST:
         _last_callers.push_front(std::move(connection));
         break;
+      case Event::InternalPriority::CONDITION:
+        _conditions.push_back(std::move(connection));
+        break;
     }
     return connection.valid;
   }
@@ -314,6 +310,34 @@ class Event
         },
         priority);
   }
+  template<class F>
+    requires(UD::Concept::Callable<F, bool(_Parameters...)>)
+  std::shared_ptr<bool> AddCondition(F function)
+  {
+    return Add(
+        [function](State& state, _Parameters... parameters)
+        {
+          if (!function(std::move(parameters)...))
+          {
+            state.Skip();
+          }
+        },
+        Event::InternalPriority::CONDITION);
+  }
+  template<class F>
+    requires(UD::Concept::Callable<F, bool()>)
+  std::shared_ptr<bool> AddCondition(F function)
+  {
+    return Add(
+        [function](State& state, _Parameters... parameters)
+        {
+          if (!function())
+          {
+            state.Skip();
+          }
+        },
+        Event::InternalPriority::CONDITION);
+  }
 
   ~Event() override       = default;
   Event(const Event&)     = default;
@@ -321,7 +345,21 @@ class Event
   auto operator=(const Event&) -> Event& = default;
   auto operator=(Event&&) noexcept -> Event& = default;
 
-  Event() noexcept = default;
+  Event() noexcept
+  {
+    Add(
+        [this](State& state, _Parameters... parameters)
+        {
+          this->PreFire(state, std::move(parameters)...);
+        },
+        Event::InternalPriority::FIRST);
+    Add(
+        [this](State& state, _Parameters... parameters)
+        {
+          this->PostFire(state, std::move(parameters)...);
+        },
+        Event::InternalPriority::LAST);
+  }
 
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
@@ -329,13 +367,13 @@ class Event
   void operator()(Ts&&... parameters)
   {
     _state.Clear();
-    FireSequence(std::forward<Ts>(parameters)...);
+    Fire(std::forward<Ts>(parameters)...);
   }
   template<class... Ts>
   void operator()(State state, Ts&&... parameters)
   {
     _state = std::move(state);
-    FireSequence(std::forward<Ts>(parameters)...);
+    Fire(std::forward<Ts>(parameters)...);
   }
 
   template<class... Ts>
