@@ -185,8 +185,11 @@ class Event
   std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
   State                                               _state            = {};
 
+  //TODO: Improve performance.
+  //      Currently accepets callers by value because must handle case where
+  //      callers is modified further in stack.
   void FireCallers(_Parameters... parameters,
-                   std::deque<detail::EventConnection<_Parameters...>>& callers)
+                   std::deque<detail::EventConnection<_Parameters...>> callers)
   {
     static std::deque<std::size_t> remove_indices;
     for (std::size_t i = 0; i < callers.size() && !_state.IsSkipping(); ++i)
