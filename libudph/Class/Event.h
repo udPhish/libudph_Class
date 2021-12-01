@@ -124,6 +124,9 @@ namespace detail
 template<class... _Parameters>
 struct EventConnection
 {
+  // TODO: Handle std::function<std::ref<Callable<void(_Parameters...)>>>
+  // instead to avoid std::function dynamic alocation nonsense.
+  //       Likely requires wrapper class (Caller?)
   std::function<void(_Parameters...)> function = [](_Parameters...) {};
   std::shared_ptr<bool>               valid    = std::make_shared<bool>(true);
 };
@@ -512,6 +515,39 @@ class Handler
     Enable(false);
   }
 };
+template<class _Return, class... _Parameters>
+struct Handler<_Return(_Parameters...)> : public Handler<_Parameters...>
+{
+  ~Handler() override = default;
+  using Handler<_Parameters...>::Handler;
+};
+namespace detail
+{
+template<class T>
+struct CallableToFunctionType
+{
+};
+template<class T, class Return, class... Args>
+struct CallableToFunctionType<Return (T::*)(Args...) const>
+{
+  using type = Return(Args...);
+};
+template<class T, class Return, class... Args>
+struct CallableToFunctionType<Return (T::*)(Args...)>
+{
+  using type = Return(Args...);
+};
+template<class Return, class... Args>
+struct CallableToFunctionType<Return (*)(Args...)>
+{
+  using type = Return(Args...);
+};
+}  // namespace detail
+template<class T>
+Handler(T) -> Handler<
+    typename detail::CallableToFunctionType<decltype(&T::operator())>::type>;
+template<class T>
+Handler(T) -> Handler<typename detail::CallableToFunctionType<T>::type>;
 
 template<class... _Parameters>
 class Queue
