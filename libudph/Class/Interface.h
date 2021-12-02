@@ -378,6 +378,7 @@ struct Shared
 
   using NextModifier<_Next>::NextModifier;
 
+ protected:
   auto SharedThis() -> std::shared_ptr<_Derived>
   {
     return shared_from_this();
@@ -388,15 +389,15 @@ struct Shared
   }
 
  private:
-   using std::enable_shared_from_this<_Derived>::shared_from_this;
-   using std::enable_shared_from_this<_Derived>::weak_from_this;
+  using std::enable_shared_from_this<_Derived>::shared_from_this;
+  using std::enable_shared_from_this<_Derived>::weak_from_this;
 };
 
 }  // namespace UD::Interface::Modifier
 namespace UD::Interface
 {
-using DefaultModifiers
-    = UD::Pack::TemplatePack<Modifier::Cloneable, Modifier::Traited>;
+using DefaultModifiers = UD::Pack::
+    TemplatePack<Modifier::Cloneable, Modifier::Shared, Modifier::Traited>;
 using SimpleModifiers = UD::Pack::TemplatePack<Modifier::Traited>;
 template<class... _Ts>
 struct Interface;
