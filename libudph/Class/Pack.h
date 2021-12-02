@@ -67,18 +67,40 @@ struct Construct<Pack<_Ts...>, Pack<_Us...>>
 {
   using Pack = UD::Pack::Pack<_Ts..., _Us...>;
 };
+namespace detail
+{
+template<class... _Ts>
+struct TemplatePackJoin;
+template<template<template<class...> class...> class _T,
+         template<class...>
+         class... _Ts,
+         template<class...>
+         class... _Us>
+struct TemplatePackJoin<_T<_Ts...>, _T<_Us...>>
+{
+  using type = _T<_Ts..., _Us...>;
+};
+}  // namespace detail
 template<template<class...> class... _Ts>
 struct TemplatePack;
 template<>
 struct TemplatePack<>
 {
   static constexpr bool Empty = true;
+  template<class T>
+  using Join = typename detail::TemplatePackJoin<TemplatePack<>, T>::type;
+  template<template<class...> class... Us>
+  using Add =typename  detail::TemplatePackJoin<TemplatePack<>, TemplatePack<Us...>>::type;
 };
 template<template<class...> class _T, template<class...> class... _Ts>
 struct TemplatePack<_T, _Ts...>
 {
   static constexpr bool Empty = false;
   using Next                  = TemplatePack<_Ts...>;
+  template<class T>
+  using Join = typename detail::TemplatePackJoin<TemplatePack<_Ts...>, T>::type;
+  template<template<class...> class... Us>
+  using Add =typename  detail::TemplatePackJoin<TemplatePack<_Ts...>, TemplatePack<Us...>>::type;
 };
 
 template<class _Pack, template<class...> class... _Templates>

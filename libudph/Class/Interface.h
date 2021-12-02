@@ -363,6 +363,34 @@ struct Traited : public NextModifier<_Next>
 
   using Traits = Traits::Traits<_Derived>;
 };
+template<class _Next, class _Derived, class... _Bases>
+struct Shared
+    : public std::enable_shared_from_this<_Derived>
+    , public NextModifier<_Next>
+{
+  ~Shared() override        = default;
+  Shared(const Shared&)     = default;
+  Shared(Shared&&) noexcept = default;
+  auto operator=(const Shared&) -> Shared& = default;
+  auto operator=(Shared&&) noexcept -> Shared& = default;
+
+  Shared() noexcept = default;
+
+  using NextModifier<_Next>::NextModifier;
+
+  auto SharedThis() -> std::shared_ptr<_Derived>
+  {
+    return shared_from_this();
+  }
+  auto WeakThis() -> std::weak_ptr<_Derived>
+  {
+    return weak_from_this();
+  }
+
+ private:
+   using std::enable_shared_from_this<_Derived>::shared_from_this;
+   using std::enable_shared_from_this<_Derived>::weak_from_this;
+};
 
 }  // namespace UD::Interface::Modifier
 namespace UD::Interface
