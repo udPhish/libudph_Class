@@ -173,7 +173,7 @@ class Event
 {
  public:
   using StateHandler = Handler<State&, _Parameters...>;
-  using Handler = Handler<_Parameters...>;
+  using Handler      = Handler<_Parameters...>;
 
  private:
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
@@ -216,18 +216,28 @@ class Event
   }
   void Fire(_Parameters... parameters)
   {
-    FireCallers(parameters..., _conditions);
-    FireCallers(parameters..., _first_callers);
-    for (auto& callers : _positive_callers)
+    if (!_conditions.empty())
+      FireCallers(parameters..., _conditions);
+    if (!_first_callers.empty())
+      FireCallers(parameters..., _first_callers);
+    if (!_positive_callers.empty())
     {
-      FireCallers(parameters..., callers.second);
+      for (auto& callers : _positive_callers)
+      {
+        FireCallers(parameters..., callers.second);
+      }
     }
-    FireCallers(parameters..., _zero_callers);
-    for (auto& callers : _negative_callers)
+    if (!_zero_callers.empty())
+      FireCallers(parameters..., _zero_callers);
+    if (!_negative_callers.empty())
     {
-      FireCallers(parameters..., callers.second);
+      for (auto& callers : _negative_callers)
+      {
+        FireCallers(parameters..., callers.second);
+      }
     }
-    FireCallers(std::move(parameters)..., _last_callers);
+    if (!_last_callers.empty())
+      FireCallers(parameters..., _last_callers);
   }
 
   template<class... Ts>
@@ -456,11 +466,13 @@ class Handler
   Handler() noexcept = default;
   Handler(FunctionType function) : _function{std::move(function)} {}
   template<class T>
-  Handler(void (T::*function)(_Parameters...), T* type)
-      : _function{[type, function](_Parameters&&... ps) mutable
-                  {
-                    (type->*function)(std::forward<_Parameters>(ps)...);
-                  }}
+  Handler(void (T::*function)(_Parameters...), T* type) : _function
+  {
+    [type, function](_Parameters&&... ps) mutable
+    {
+      (type->*function)(std::forward<_Parameters>(ps)...);
+    }
+  }
   {
   }
 
