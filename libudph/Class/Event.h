@@ -354,15 +354,15 @@ class Event
   Event() noexcept
   {
     Add(
-        [this](State& state, _Parameters... parameters)
+        [this](State& state, _Parameters&&... parameters)
         {
-          this->PreFire(state, std::move(parameters)...);
+          this->PreFire(state, std::forward<_Parameters>(parameters)...);
         },
         Event::InternalPriority::FIRST);
     Add(
-        [this](State& state, _Parameters... parameters)
+        [this](State& state, _Parameters&&... parameters)
         {
-          this->PostFire(state, std::move(parameters)...);
+          this->PostFire(state, std::forward<_Parameters>(parameters)...);
         },
         Event::InternalPriority::LAST);
   }
