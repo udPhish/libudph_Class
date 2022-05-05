@@ -41,6 +41,15 @@ using Abstract = Tag<_T, TagID::Abstract>;
 }  // namespace UD::Tag::Interface::Modifier
 namespace UD::Interface::Traits
 {
+template<class _Self, class _Leaf>
+struct InheritDescriptor
+{
+  virtual ~InheritDescriptor()                    = default;
+  InheritDescriptor(const InheritDescriptor&)     = default;
+  InheritDescriptor(InheritDescriptor&&) noexcept = default;
+  auto operator=(const InheritDescriptor&) -> InheritDescriptor& = default;
+  auto operator=(InheritDescriptor&&) noexcept -> InheritDescriptor& = default;
+};
 template<class T>
 struct Basic
 {
@@ -96,15 +105,6 @@ struct Member<_Pointer, _Name>
   static constexpr char const*              Name    = _Name.p;
 };
 
-template<class _Self, class _Leaf>
-struct InheritDescriptor
-{
-  virtual ~InheritDescriptor()                    = default;
-  InheritDescriptor(const InheritDescriptor&)     = default;
-  InheritDescriptor(InheritDescriptor&&) noexcept = default;
-  auto operator=(const InheritDescriptor&) -> InheritDescriptor& = default;
-  auto operator=(InheritDescriptor&&) noexcept -> InheritDescriptor& = default;
-};
 template<class _Self>
 struct Descriptor
 {

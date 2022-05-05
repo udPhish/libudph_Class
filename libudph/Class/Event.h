@@ -185,9 +185,9 @@ class Event
   std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
   State                                               _state            = {};
 
-  //TODO: Improve performance.
-  //      Currently accepets callers by value because must handle case where
-  //      callers is modified further in stack.
+  // TODO: Improve performance.
+  //       Currently accepets callers by value because must handle case where
+  //       callers is modified further in stack.
   void FireCallers(_Parameters... parameters,
                    std::deque<detail::EventConnection<_Parameters...>> callers)
   {
@@ -595,8 +595,9 @@ class Queue
   auto operator=(const Queue&) -> Queue& = default;
   auto operator=(Queue&&) noexcept -> Queue& = default;
   Queue() noexcept
-      : Queue::Super{
-          Queue::Constructor<Handler<_Parameters...>>::Call(&Queue::Push, this)}
+      : Queue::Super{Queue::template Constructor<Handler<_Parameters...>>::Call(
+          &Queue::Push,
+          this)}
   {
   }
 

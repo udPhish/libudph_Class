@@ -8,12 +8,71 @@ concept HasType = requires(T)
 {
   typename T::type;
 };
+
+template<auto... _Ts>
+struct ValuesPack;
+template<class T, class U>
+struct ValuesPackConcat;
+template<auto... Ts, auto... Us>
+struct ValuesPackConcat<ValuesPack<Ts...>, ValuesPack<Us...>>
+{
+  using type = ValuesPack<Ts..., Us...>;
+};
+template<>
+struct ValuesPack<>
+{
+  static constexpr bool Empty = true;
+  template<class Other>
+  using Concat = typename ValuesPackConcat<ValuesPack, Other>::type;
+};
+template<auto _T, auto... _Ts>
+struct ValuesPack<_T, _Ts...>
+{
+  static constexpr bool Empty = false;
+  template<class Other>
+  using Concat = typename ValuesPackConcat<ValuesPack, Other>::type;
+  using Next   = ValuesPack<_Ts...>;
+  using Reverse =
+      typename ValuesPackConcat<typename ValuesPack<_Ts...>::Reverse,
+                                ValuesPack<_T>>::type;
+  static constexpr auto Value     = _T;
+  static constexpr auto LastValue = Next::LastValue;
+
+  // static constexpr bool leading_zero
+  //     = Next::leading_zero && Value == 0;
+  // static constexpr bool leading_non_zero = next::leading_zero &&
+  // !leading_zero;
+};
+template<auto _T>
+struct ValuesPack<_T>
+{
+  static constexpr bool Empty = false;
+  template<class T>
+  using Concat                = typename ValuesPackConcat<ValuesPack, T>::type;
+  using Next                  = ValuesPack<>;
+  using Reverse               = ValuesPack;
+  static constexpr auto Value = _T;
+  static constexpr auto LastValue = _T;
+  // static constexpr bool leading_zero       = next::leading_zero && value ==
+  // 0; static constexpr bool leading_non_zero = next::leading_zero &&
+  // !leading_zero;
+};
+
 template<class... _Ts>
 struct Pack;
+template<class T, class U>
+struct PackConcat;
+template<class... Ts, class... Us>
+struct PackConcat<Pack<Ts...>, Pack<Us...>>
+{
+  using type = Pack<Ts..., Us...>;
+};
 template<>
 struct Pack<>
 {
   static constexpr bool Empty = true;
+  template<class Other>
+  using Concat = typename PackConcat<Pack, Other>::type;
 };
 template<class _T, class... _Ts>
 struct Pack<_T, _Ts...>
@@ -21,6 +80,10 @@ struct Pack<_T, _Ts...>
   static constexpr bool Empty = false;
   using Type                  = _T;
   using Next                  = Pack<_Ts...>;
+  template<_T T, _Ts... Ts>
+  using Values = ValuesPack<T, Ts...>;
+  template<class Other>
+  using Concat = typename PackConcat<Pack, Other>::type;
 };
 template<class... _Ts>
 struct Pack<Pack<_Ts...>> : public Pack<_Ts...>
@@ -90,7 +153,8 @@ struct TemplatePack<>
   template<class T>
   using Join = typename detail::TemplatePackJoin<TemplatePack<>, T>::type;
   template<template<class...> class... Us>
-  using Add =typename  detail::TemplatePackJoin<TemplatePack<>, TemplatePack<Us...>>::type;
+  using Add = typename detail::TemplatePackJoin<TemplatePack<>,
+                                                TemplatePack<Us...>>::type;
 };
 template<template<class...> class _T, template<class...> class... _Ts>
 struct TemplatePack<_T, _Ts...>
@@ -100,7 +164,8 @@ struct TemplatePack<_T, _Ts...>
   template<class T>
   using Join = typename detail::TemplatePackJoin<TemplatePack<_Ts...>, T>::type;
   template<template<class...> class... Us>
-  using Add =typename  detail::TemplatePackJoin<TemplatePack<_Ts...>, TemplatePack<Us...>>::type;
+  using Add = typename detail::TemplatePackJoin<TemplatePack<_Ts...>,
+                                                TemplatePack<Us...>>::type;
 };
 
 template<class _Pack, template<class...> class... _Templates>
@@ -117,7 +182,7 @@ struct InheritPackBase : public _T
   template<class T>
   friend struct InheritPack;
 
- private:
+ protected:
   struct Constructor
   {
     template<class... _Args>
@@ -139,9 +204,11 @@ struct InheritPackBase : public _T
   using _T::_T;
   template<class... Args>
   InheritPackBase(typename Constructor::template Call<Args...>&& constructor)
-      : InheritPackBase(std::forward<Constructor::Call<Args...>>(constructor),
-                        std::make_index_sequence<
-                            std::tuple_size<std::tuple<Args...>>::value>{})
+      : InheritPackBase(
+          std::forward<typename Constructor::template Call<Args...>>(
+              constructor),
+          std::make_index_sequence<
+              std::tuple_size<std::tuple<Args...>>::value>{})
   {
   }
 
