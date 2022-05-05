@@ -172,7 +172,8 @@ class Event
                                       UD::Interface::SimpleModifiers>
 {
  public:
-  using Handler = Handler<State&, _Parameters...>;
+  using StateHandler = Handler<State&, _Parameters...>;
+  using Handler = Handler<_Parameters...>;
 
  private:
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
