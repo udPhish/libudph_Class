@@ -2,6 +2,7 @@
 #include <array>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -152,7 +153,13 @@ class Invalidator
   auto operator=(const Invalidator&) -> Invalidator& = default;
   auto operator=(Invalidator&&) noexcept -> Invalidator& = default;
 };
-
+enum Priority : int
+{
+  LOWEST  = std::numeric_limits<int>::min(),
+  HIGHEST = std::numeric_limits<int>::max()
+};
+namespace detail
+{
 struct PriorityBase
 {
   virtual ~PriorityBase() = default;
@@ -165,10 +172,11 @@ struct PriorityBase
     LAST
   };
 };
+}  // namespace detail
 template<class... _Parameters>
 class Event
     : public UD::Interface::Interface<Event<_Parameters...>,
-                                      UD::Pack::Pack<PriorityBase>,
+                                      UD::Pack::Pack<detail::PriorityBase>,
                                       UD::Interface::SimpleModifiers>
 {
  public:
