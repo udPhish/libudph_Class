@@ -504,6 +504,7 @@ class Handler
         priority));
   }
   template<class F, class... Ts>
+    requires(!std::convertible_to<F, int>)
   void operator()(Event<Ts...>& e, F adaptor_function, int priority = 0)
   {
     _invalidators.push_back(
