@@ -1,28 +1,59 @@
 #include <iostream>
 
 #include <libudph/Class/Event.h>
+
+struct Object
+{
+  struct Event
+  {
+    enum class ID
+    {
+      A,
+      B,
+      C,
+      D
+    };
+    template<ID id>
+    struct Data;
+    using ET = UD::Event::Event<ID>;
+    ET et;
+  };
+};
+
+Object::Event event;
+
+template<>
+struct Object::Event::Data<Object::Event::ID::A>
+{
+  using type = int;
+};
+template<>
+struct Object::Event::Data<Object::Event::ID::B>
+{
+  using type = char;
+};
+
+
 int main()
 {
-  UD::Event::Event<int>  e1;
-  UD::Event::Event<char> e2;
+  UD::Event::State s;
 
-  UD::Event::Handler<UD::Event::State&, int> h1{[](UD::Event::State& s, int i)
-                                                {
-                                                  std::cout << "h1: " << i
-                                                            << std::endl;
-                                                }};
-  UD::Event::Handler<int>                    h2{[](int i)
-                             {
-                               std::cout << "h2: " << i << std::endl;
-                             }};
-
-  e2.AddCondition(
-      []()
+  auto handler = Object::Event::ET::StateHandler{
+      [&](UD::Event::State& state, Object::Event::ID id)
       {
-        return false;
-      });
-  h1(e1);
-  h2(e2);
-  e2.Link(e1);
-  e1(2);
+        s.Emplace<int>(3);
+        std::cout << *state.Get<int>() << std::endl;
+        event.et(s, Object::Event::ID::A);
+      }};
+  auto handler2 = Object::Event::ET::StateHandler{
+      [](UD::Event::State& state, Object::Event::ID id)
+      {
+        std::cout << "here" << std::endl;
+        std::cout << *state.Get<int>() << std::endl;
+      }};
+  handler(event.et);
+  handler2(event.et);
+
+  s.Emplace<int>(2);
+  event.et(s, Object::Event::ID::A);
 }

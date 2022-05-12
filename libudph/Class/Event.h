@@ -91,9 +91,11 @@ class State
         }
         } -> std::same_as<T>;
     }
-  void Emplace(Ts... ts)
+  auto Emplace(Ts... ts) -> std::shared_ptr<T>
   {
-    _data = std::make_shared<T>(ts...);
+    auto ret = std::make_shared<T>(ts...);
+    _data    = std::static_pointer_cast<void>(ret);
+    return ret;
   }
   template<class T>
   auto Get() -> std::shared_ptr<T>
@@ -184,6 +186,7 @@ class Event
   using Handler      = Handler<_Parameters...>;
 
  private:
+  bool _firing = false;
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
       _positive_callers = {};
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
@@ -193,10 +196,11 @@ class Event
   std::deque<detail::EventConnection<_Parameters...>> _last_callers     = {};
   std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
   State                                               _state            = {};
+  std::deque<std::function<void()>>                   _delayed_fires    = {};
 
   // TODO: Improve performance.
-  //       Currently accepets callers by value because must handle case where
-  //       callers is modified further in stack.
+  //       Currently accepets callers by value because must handle case
+  //       where callers is modified further in stack.
   void FireCallers(_Parameters... parameters,
                    std::deque<detail::EventConnection<_Parameters...>> callers)
   {
@@ -222,6 +226,7 @@ class Event
       remove_indices.clear();
     }
   }
+
   void Fire(_Parameters... parameters)
   {
     if (!_conditions.empty())
@@ -391,14 +396,29 @@ class Event
                                             UD::Pack::Pack<_Parameters...>>)
   void operator()(Ts&&... parameters)
   {
-    _state.Clear();
-    Fire(std::forward<Ts>(parameters)...);
+    operator()(State{}, std::forward<Ts>(parameters)...);
   }
   template<class... Ts>
   void operator()(State state, Ts&&... parameters)
   {
-    _state = std::move(state);
+    if (_firing)
+    {
+      _delayed_fires.push_back(
+          [this, state, ... parameters = std::forward<Ts>(parameters)]()
+          {
+            operator()(std::move(state),
+                       std::forward<decltype(parameters)>(parameters)...);
+          });
+      return;
+    }
+    _firing = true;
+    _state  = std::move(state);
     Fire(std::forward<Ts>(parameters)...);
+    _firing = false;
+    for (auto& f : _delayed_fires)
+    {
+      f();
+    }
   }
 
   template<class... Ts>
