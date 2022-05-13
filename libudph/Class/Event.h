@@ -341,12 +341,6 @@ class Event
     }
   }
 
-  template<class... Ts>
-  void LinkCallback(State& state, Ts&&... ps)
-  {
-    FireBypassManager(state, std::forward<Ts>(ps)...);
-  }
-
  protected:
   virtual void PreFire(State& state, _Parameters... parameters) {}
   virtual void PostFire(State& state, _Parameters... parameters) {}
@@ -499,15 +493,36 @@ class Event
     Fire(std::move(state), std::forward<Ts>(parameters)...);
   }
 
+ private:
+  template<class... Ts>
+  void LinkCallback(State& state, Ts&&... ps)
+  {
+    FireBypassManager(state, std::forward<Ts>(ps)...);
+  }
+
+ public:
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
                                             UD::Pack::Pack<_Parameters...>>)
-  void Link(Event<Ts...>& e)
+  void LinkFrom(Event<Ts...>& e)
   {
     e.Add(
         [this](State& state, Ts&&... ts)
         {
           this->LinkCallback<_Parameters...>(state, std::forward<Ts>(ts)...);
+        },
+        Event::InternalPriority::LAST);
+  }
+
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<_Parameters...>,
+                                            UD::Pack::Pack<Ts...>>)
+  void LinkTo(Event<Ts...>& e)
+  {
+    this->Add(
+        [&e](State& state, Ts&&... ts)
+        {
+          e.template LinkCallback<Ts...>(state, std::forward<Ts>(ts)...);
         },
         Event::InternalPriority::LAST);
   }
