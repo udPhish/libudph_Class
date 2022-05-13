@@ -300,7 +300,7 @@ class Event
     if (_firing)
     {
       _delayed_fires.push_back(
-          [this, state, ... parameters = parameters]()
+          [this, state, ... parameters = parameters]() mutable
           {
             operator()(std::move(state), parameters...);
           });
