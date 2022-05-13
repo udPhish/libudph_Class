@@ -20,8 +20,6 @@ struct Object
   };
 };
 
-Object::Event event;
-
 template<>
 struct Object::Event::Data<Object::Event::ID::A>
 {
@@ -33,27 +31,36 @@ struct Object::Event::Data<Object::Event::ID::B>
   using type = char;
 };
 
-
 int main()
 {
-  UD::Event::State s;
+  auto m     = std::make_shared<UD::Event::Manager>();
+  auto s     = UD::Event::State{};
+  auto event = Object::Event{m};
 
   auto handler = Object::Event::ET::StateHandler{
       [&](UD::Event::State& state, Object::Event::ID id)
       {
-        s.Emplace<int>(3);
-        std::cout << *state.Get<int>() << std::endl;
+        s.Emplace<int>(3333);
+        std::cout << "1" << std::endl;
+        event.et(s, Object::Event::ID::A);
         event.et(s, Object::Event::ID::A);
       }};
   auto handler2 = Object::Event::ET::StateHandler{
       [](UD::Event::State& state, Object::Event::ID id)
       {
-        std::cout << "here" << std::endl;
-        std::cout << *state.Get<int>() << std::endl;
+        std::cout << "2" << std::endl;
       }};
   handler(event.et);
   handler2(event.et);
 
-  s.Emplace<int>(2);
+  s.Emplace<int>(299);
   event.et(s, Object::Event::ID::A);
+
+  std::cout << "--" << std::endl;
+  m->RunAll();
+  std::cout << "--" << std::endl;
+  m->RunAll();
+  std::cout << "--" << std::endl;
+  m->RunAll();
+  std::cout << "--" << std::endl;
 }

@@ -175,6 +175,42 @@ struct PriorityBase
   };
 };
 }  // namespace detail
+class Manager
+{
+  // TODO: replace std::function with own implementation because it's slow
+  std::deque<std::function<void()>> _event_queue = {};
+
+ public:
+  void Queue(std::function<void()> func)
+  {
+    _event_queue.push_back(std::move(func));
+  }
+  auto Empty() -> bool
+  {
+    return _event_queue.empty();
+  }
+
+  void RunAll()
+  {
+    auto s = _event_queue.size();
+    for (std::size_t i = 0; i < s; ++i)
+    {
+      RunNext();
+    }
+  }
+  void RunNext()
+  {
+    _event_queue.front()();
+    _event_queue.pop_front();
+  }
+  void Run()
+  {
+    while (!Empty())
+    {
+      RunNext();
+    }
+  }
+};
 template<class... _Parameters>
 class Event
     : public UD::Interface::Interface<Event<_Parameters...>,
@@ -186,7 +222,6 @@ class Event
   using Handler      = Handler<_Parameters...>;
 
  private:
-  bool _firing = false;
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
       _positive_callers = {};
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
@@ -197,6 +232,8 @@ class Event
   std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
   State                                               _state            = {};
   std::deque<std::function<void()>>                   _delayed_fires    = {};
+  std::shared_ptr<Manager>                            _manager = nullptr;
+  bool                                                _firing  = false;
 
   // TODO: Improve performance.
   //       Currently accepets callers by value because must handle case
@@ -227,8 +264,52 @@ class Event
     }
   }
 
-  void Fire(_Parameters... parameters)
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
+  void Fire(Ts&&... parameters)
   {
+    Fire(State{}, std::forward<Ts>(parameters)...);
+  }
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
+  void Fire(State state, Ts&&... parameters)
+  {
+    if (_manager)
+    {
+      _manager->Queue(
+          [this, state, ... parameters = std::forward<Ts>(parameters)]() mutable
+          {
+            FireBypassManager(std::move(state),
+                              std::forward<Ts>(parameters)...);
+          });
+      return;
+    }
+    FireBypassManager(std::move(state), std::forward<Ts>(parameters)...);
+  }
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
+  void FireBypassManager(Ts&&... parameters)
+  {
+    FireBypassManager(State{}, std::forward<Ts>(parameters)...);
+  }
+  void FireBypassManager(State state, _Parameters... parameters)
+  {
+    if (_firing)
+    {
+      _delayed_fires.push_back(
+          [this, state, ... parameters = parameters]()
+          {
+            operator()(std::move(state), parameters...);
+          });
+      return;
+    }
+
+    _firing = true;
+    _state  = std::move(state);
+
     if (!_conditions.empty())
       FireCallers(parameters..., _conditions);
     if (!_first_callers.empty())
@@ -251,6 +332,13 @@ class Event
     }
     if (!_last_callers.empty())
       FireCallers(parameters..., _last_callers);
+
+    _firing = false;
+
+    for (auto& f : _delayed_fires)
+    {
+      f();
+    }
   }
 
   template<class... Ts>
@@ -375,7 +463,8 @@ class Event
   auto operator=(const Event&) -> Event& = default;
   auto operator=(Event&&) noexcept -> Event& = default;
 
-  Event() noexcept
+  Event() noexcept : Event{nullptr} {}
+  Event(std::shared_ptr<Manager> manager) : _manager{std::move(manager)}
   {
     Add(
         [this](State& state, _Parameters&&... parameters)
@@ -391,6 +480,10 @@ class Event
         Event::InternalPriority::LAST);
   }
 
+  void SetManager(std::shared_ptr<Manager> manager)
+  {
+    _manager = std::move(manager);
+  }
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
                                             UD::Pack::Pack<_Parameters...>>)
@@ -399,26 +492,11 @@ class Event
     operator()(State{}, std::forward<Ts>(parameters)...);
   }
   template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
   void operator()(State state, Ts&&... parameters)
   {
-    if (_firing)
-    {
-      _delayed_fires.push_back(
-          [this, state, ... parameters = std::forward<Ts>(parameters)]()
-          {
-            operator()(std::move(state),
-                       std::forward<decltype(parameters)>(parameters)...);
-          });
-      return;
-    }
-    _firing = true;
-    _state  = std::move(state);
-    Fire(std::forward<Ts>(parameters)...);
-    _firing = false;
-    for (auto& f : _delayed_fires)
-    {
-      f();
-    }
+    Fire(std::move(state), std::forward<Ts>(parameters)...);
   }
 
   template<class... Ts>
