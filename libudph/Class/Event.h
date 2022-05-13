@@ -344,7 +344,7 @@ class Event
   template<class... Ts>
   void LinkCallback(State& state, Ts&&... ps)
   {
-    operator()(state, std::forward<Ts>(ps)...);
+    FireBypassManager(state, std::forward<Ts>(ps)...);
   }
 
  protected:
