@@ -179,18 +179,42 @@ struct PriorityBase
 class Manager
 {
   // TODO: replace std::function with own implementation because it's slow
-  std::deque<std::function<void()>> _event_queue       = {};
-  std::mutex                        _mutex_event_queue = {};
+  std::deque<std::function<void()>> _event_queue           = {};
+  std::deque<std::function<void()>> _new_event_queue       = {};
+  std::mutex                        _mutex_event_queue     = {};
+  std::mutex                        _mutex_new_event_queue = {};
 
  public:
   void Queue(std::function<void()> func)
   {
-    auto lock = std::scoped_lock{_mutex_event_queue};
-    QueueSynchronous(std::move(func));
+    if (!_mutex_event_queue.try_lock())
+    {
+      QueueNew(std::move(func));
+    }
+    else
+    {
+      auto lock = std::scoped_lock{std::adopt_lock, _mutex_event_queue};
+      QueueSynchronous(std::move(func));
+    }
   }
   void QueueSynchronous(std::function<void()> func)
   {
     _event_queue.push_back(std::move(func));
+  }
+  void QueueNew(std::function<void()> func)
+  {
+    auto lock = std::scoped_lock{_mutex_new_event_queue};
+    _new_event_queue.push_back(std::move(func));
+  }
+  void UpdateQueue()
+  {
+    auto lock = std::scoped_lock{_mutex_event_queue, _mutex_new_event_queue};
+
+    while (!_new_event_queue.empty())
+    {
+      _event_queue.push_back(std::move(_new_event_queue.front()));
+      _new_event_queue.pop_front();
+    }
   }
   auto Empty() -> bool
   {
@@ -204,8 +228,9 @@ class Manager
 
   void RunAll()
   {
+    UpdateQueue();
     auto lock = std::scoped_lock{_mutex_event_queue};
-    RunAllSynchronous()
+    RunAllSynchronous();
   }
   void RunAllSynchronous()
   {
@@ -217,6 +242,7 @@ class Manager
   }
   void RunNext()
   {
+    UpdateQueue();
     auto lock = std::scoped_lock{_mutex_event_queue};
     RunNextSynchronous();
   }
@@ -227,6 +253,7 @@ class Manager
   }
   void Run()
   {
+    UpdateQueue();
     auto lock = std::scoped_lock{_mutex_event_queue};
     RunSynchronous();
   }
@@ -252,16 +279,28 @@ class Event
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
       _positive_callers = {};
   std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
-                                                      _negative_callers = {};
-  std::deque<detail::EventConnection<_Parameters...>> _zero_callers     = {};
-  std::deque<detail::EventConnection<_Parameters...>> _first_callers    = {};
-  std::deque<detail::EventConnection<_Parameters...>> _last_callers     = {};
-  std::deque<detail::EventConnection<_Parameters...>> _conditions       = {};
-  State                                               _state            = {};
-  std::deque<std::function<void()>>                   _delayed_fires    = {};
-  std::shared_ptr<Manager>                            _manager = nullptr;
-  bool                                                _firing  = false;
+      _new_positive_callers = {};
+  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
+      _negative_callers = {};
+  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
+      _new_negative_callers                                              = {};
+  std::deque<detail::EventConnection<_Parameters...>> _zero_callers      = {};
+  std::deque<detail::EventConnection<_Parameters...>> _new_zero_callers  = {};
+  std::deque<detail::EventConnection<_Parameters...>> _first_callers     = {};
+  std::deque<detail::EventConnection<_Parameters...>> _new_first_callers = {};
+  std::deque<detail::EventConnection<_Parameters...>> _last_callers      = {};
+  std::deque<detail::EventConnection<_Parameters...>> _new_last_callers  = {};
+  std::deque<detail::EventConnection<_Parameters...>> _conditions        = {};
+  std::deque<detail::EventConnection<_Parameters...>> _new_conditions    = {};
 
+  State                             _state               = {};
+  std::deque<std::function<void()>> _delayed_fires       = {};
+  std::shared_ptr<Manager>          _manager             = nullptr;
+  std::mutex                        _mutex               = {};
+  std::mutex                        _mutex_firing        = {};
+  std::mutex                        _mutex_delayed_fires = {};
+  std::mutex                        _mutex_new           = {};
+  std::mutex                        _mutex_manager       = {};
   // TODO: Improve performance.
   //       Currently accepets callers by value because must handle case
   //       where callers is modified further in stack.
@@ -303,17 +342,68 @@ class Event
                                             UD::Pack::Pack<_Parameters...>>)
   void Fire(State state, Ts&&... parameters)
   {
-    if (_manager)
     {
-      _manager->Queue(
-          [this, state, ... parameters = std::forward<Ts>(parameters)]() mutable
-          {
-            FireBypassManager(std::move(state),
-                              std::forward<Ts>(parameters)...);
-          });
-      return;
+      auto lock = std::scoped_lock{_mutex_manager};
+      if (_manager)
+      {
+        _manager->Queue(
+            [this,
+             state,
+             ... parameters = std::forward<Ts>(parameters)]() mutable
+            {
+              FireBypassManager(std::move(state),
+                                std::forward<Ts>(parameters)...);
+            });
+        return;
+      }
     }
     FireBypassManager(std::move(state), std::forward<Ts>(parameters)...);
+  }
+  void UpdateCallersAssumedLockMutex()
+  {
+    auto lock = std::scoped_lock{ _mutex_new};
+    for (auto& p : _new_positive_callers)
+    {
+      while (!p.second.empty())
+      {
+        _positive_callers
+            .insert({p.first,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_back(std::move(p.second.front()));
+        p.second.pop_front();
+      }
+    }
+    for (auto& p : _new_negative_callers)
+    {
+      while (!p.second.empty())
+      {
+        _negative_callers
+            .insert({p.first,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_back(std::move(p.second.front()));
+        p.second.pop_front();
+      }
+    }
+    while (!_new_zero_callers.empty())
+    {
+      _zero_callers.push_back(std::move(_new_zero_callers.front()));
+      _new_zero_callers.pop_front();
+    }
+    while (!_new_first_callers.empty())
+    {
+      _first_callers.push_back(std::move(_new_first_callers.front()));
+      _new_first_callers.pop_front();
+    }
+    while (!_new_last_callers.empty())
+    {
+      _last_callers.push_back(std::move(_new_last_callers.front()));
+      _new_last_callers.pop_front();
+    }
+    while (!_new_conditions.empty())
+    {
+      _conditions.push_back(std::move(_new_conditions.front()));
+      _new_conditions.pop_front();
+    }
   }
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
@@ -324,8 +414,9 @@ class Event
   }
   void FireBypassManager(State state, _Parameters... parameters)
   {
-    if (_firing)
+    if (!_mutex_firing.try_lock())
     {
+      auto lock = std::scoped_lock{_mutex_delayed_fires};
       _delayed_fires.push_back(
           [this, state, ... parameters = parameters]() mutable
           {
@@ -333,36 +424,43 @@ class Event
           });
       return;
     }
-
-    _firing = true;
-    _state  = std::move(state);
-
-    if (!_conditions.empty())
-      FireCallers(parameters..., _conditions);
-    if (!_first_callers.empty())
-      FireCallers(parameters..., _first_callers);
-    if (!_positive_callers.empty())
+    else
     {
-      for (auto& callers : _positive_callers)
+      _mutex.lock();
+      auto lock = std::scoped_lock{std::adopt_lock, _mutex_firing, _mutex};
+      UpdateCallersAssumedLockMutex();
+
+      _state = std::move(state);
+      if (!_conditions.empty())
+        FireCallers(parameters..., _conditions);
+      if (!_first_callers.empty())
+        FireCallers(parameters..., _first_callers);
+      if (!_positive_callers.empty())
       {
-        FireCallers(parameters..., callers.second);
+        for (auto& callers : _positive_callers)
+        {
+          FireCallers(parameters..., callers.second);
+        }
       }
+      if (!_zero_callers.empty())
+        FireCallers(parameters..., _zero_callers);
+      if (!_negative_callers.empty())
+      {
+        for (auto& callers : _negative_callers)
+        {
+          FireCallers(parameters..., callers.second);
+        }
+      }
+      if (!_last_callers.empty())
+        FireCallers(parameters..., _last_callers);
     }
-    if (!_zero_callers.empty())
-      FireCallers(parameters..., _zero_callers);
-    if (!_negative_callers.empty())
+    std::deque<std::function<void()>> delayed_fires;
     {
-      for (auto& callers : _negative_callers)
-      {
-        FireCallers(parameters..., callers.second);
-      }
+      auto lock      = std::scoped_lock{_mutex_delayed_fires};
+      delayed_fires  = std::move(_delayed_fires);
+      _delayed_fires = std::deque<std::function<void()>>{};
     }
-    if (!_last_callers.empty())
-      FireCallers(parameters..., _last_callers);
-
-    _firing = false;
-
-    for (auto& f : _delayed_fires)
+    for (auto& f : delayed_fires)
     {
       f();
     }
@@ -377,30 +475,58 @@ class Event
     requires(UD::Concept::Invocable<F, _Parameters...>)
   std::shared_ptr<bool> Add(F function, int priority = 0)
   {
-    detail::EventConnection<_Parameters...> connection(
+    auto connection = detail::EventConnection<_Parameters...>{
         [function](auto&&... ts) mutable
         {
           function(std::forward<decltype(ts)>(ts)...);
-        });
-    if (priority < 0)
+        }};
+    auto valid = connection.valid;
+    if (_mutex.try_lock())
     {
-      _negative_callers
-          .insert(
-              {priority, std::deque<detail::EventConnection<_Parameters...>>{}})
-          .first->second.push_front(std::move(connection));
-    }
-    else if (priority > 0)
-    {
-      _positive_callers
-          .insert(
-              {priority, std::deque<detail::EventConnection<_Parameters...>>{}})
-          .first->second.push_back(std::move(connection));
+      auto lock = std::scoped_lock{std::adopt_lock, _mutex};
+
+      if (priority < 0)
+      {
+        _negative_callers
+            .insert({priority,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_front(std::move(connection));
+      }
+      else if (priority > 0)
+      {
+        _positive_callers
+            .insert({priority,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_back(std::move(connection));
+      }
+      else
+      {
+        _zero_callers.push_back(std::move(connection));
+      }
     }
     else
     {
-      _zero_callers.push_back(std::move(connection));
+      auto lock = std::scoped_lock{_mutex_new};
+      if (priority < 0)
+      {
+        _new_negative_callers
+            .insert({priority,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_front(std::move(connection));
+      }
+      else if (priority > 0)
+      {
+        _new_positive_callers
+            .insert({priority,
+                     std::deque<detail::EventConnection<_Parameters...>>{}})
+            .first->second.push_back(std::move(connection));
+      }
+      else
+      {
+        _new_zero_callers.push_back(std::move(connection));
+      }
     }
-    return connection.valid;
+    return valid;
   }
   template<class F>
     requires(UD::Concept::Invocable<F, State&, _Parameters...>)
@@ -423,19 +549,40 @@ class Event
         {
           function(std::forward<decltype(ts)>(ts)...);
         });
-    switch (priority)
+    auto valid = connection.valid;
+    if (_mutex.try_lock())
     {
-      case Event::InternalPriority::FIRST:
-        _first_callers.push_back(std::move(connection));
-        break;
-      case Event::InternalPriority::LAST:
-        _last_callers.push_front(std::move(connection));
-        break;
-      case Event::InternalPriority::CONDITION:
-        _conditions.push_back(std::move(connection));
-        break;
+      auto lock = std::scoped_lock{std::adopt_lock, _mutex};
+      switch (priority)
+      {
+        case Event::InternalPriority::FIRST:
+          _first_callers.push_back(std::move(connection));
+          break;
+        case Event::InternalPriority::LAST:
+          _last_callers.push_front(std::move(connection));
+          break;
+        case Event::InternalPriority::CONDITION:
+          _conditions.push_back(std::move(connection));
+          break;
+      }
     }
-    return connection.valid;
+    else
+    {
+      auto lock = std::scoped_lock{_mutex_new};
+      switch (priority)
+      {
+        case Event::InternalPriority::FIRST:
+          _new_first_callers.push_back(std::move(connection));
+          break;
+        case Event::InternalPriority::LAST:
+          _new_last_callers.push_front(std::move(connection));
+          break;
+        case Event::InternalPriority::CONDITION:
+          _new_conditions.push_back(std::move(connection));
+          break;
+      }
+    }
+    return valid;
   }
   template<class F>
     requires(UD::Concept::Invocable<F, State&, _Parameters...>)
@@ -503,7 +650,8 @@ class Event
 
   void SetManager(std::shared_ptr<Manager> manager)
   {
-    _manager = std::move(manager);
+    auto lock = std::scoped_lock{_mutex_manager};
+    _manager  = std::move(manager);
   }
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,

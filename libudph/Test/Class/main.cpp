@@ -50,7 +50,13 @@ int main()
       {
         std::cout << "2" << std::endl;
       }};
+  auto handler3 = Object::Event::ET::StateHandler{
+      [](UD::Event::State& state, Object::Event::ID id)
+      {
+        std::cout << "3" << std::endl;
+      }};
   handler(event.et);
+  handler3(event.et);
   handler2(event.et);
 
   s.Emplace<int>(299);
