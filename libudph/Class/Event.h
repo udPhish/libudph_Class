@@ -6,6 +6,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <ranges>
 #include <tuple>
 #include <type_traits>
@@ -178,36 +179,62 @@ struct PriorityBase
 class Manager
 {
   // TODO: replace std::function with own implementation because it's slow
-  std::deque<std::function<void()>> _event_queue = {};
+  std::deque<std::function<void()>> _event_queue       = {};
+  std::mutex                        _mutex_event_queue = {};
 
  public:
   void Queue(std::function<void()> func)
   {
+    auto lock = std::scoped_lock{_mutex_event_queue};
+    QueueSynchronous(std::move(func));
+  }
+  void QueueSynchronous(std::function<void()> func)
+  {
     _event_queue.push_back(std::move(func));
   }
   auto Empty() -> bool
+  {
+    auto lock = std::scoped_lock{_mutex_event_queue};
+    return EmptySynchronous();
+  }
+  auto EmptySynchronous() -> bool
   {
     return _event_queue.empty();
   }
 
   void RunAll()
   {
+    auto lock = std::scoped_lock{_mutex_event_queue};
+    RunAllSynchronous()
+  }
+  void RunAllSynchronous()
+  {
     auto s = _event_queue.size();
     for (std::size_t i = 0; i < s; ++i)
     {
-      RunNext();
+      RunNextSynchronous();
     }
   }
   void RunNext()
+  {
+    auto lock = std::scoped_lock{_mutex_event_queue};
+    RunNextSynchronous();
+  }
+  void RunNextSynchronous()
   {
     _event_queue.front()();
     _event_queue.pop_front();
   }
   void Run()
   {
+    auto lock = std::scoped_lock{_mutex_event_queue};
+    RunSynchronous();
+  }
+  void RunSynchronous()
+  {
     while (!Empty())
     {
-      RunNext();
+      RunNextSynchronous();
     }
   }
 };
