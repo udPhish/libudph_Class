@@ -259,7 +259,7 @@ class Manager
   }
   void RunSynchronous()
   {
-    while (!Empty())
+    while (!EmptySynchronous())
     {
       RunNextSynchronous();
     }
