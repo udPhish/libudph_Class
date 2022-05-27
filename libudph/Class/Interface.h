@@ -387,10 +387,22 @@ struct Shared
   {
     return weak_from_this();
   }
+  struct SharedConstructor
+  {
+    explicit SharedConstructor() = default;
+  };
 
  private:
   using std::enable_shared_from_this<_Derived>::shared_from_this;
   using std::enable_shared_from_this<_Derived>::weak_from_this;
+
+ public:
+  template<class... Ts>
+  [[nodiscard]] static auto MakeShared(Ts&&... ts) -> std::shared_ptr<_Derived>
+  {
+    return std::make_shared<_Derived>(SharedConstructor{},
+                                      std::forward<Ts>(ts)...);
+  }
 };
 
 }  // namespace UD::Interface::Modifier
