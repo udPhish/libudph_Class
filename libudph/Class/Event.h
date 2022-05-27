@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <chrono>
 #include <deque>
 #include <functional>
 #include <limits>
@@ -77,6 +78,12 @@ class State
   std::shared_ptr<void> _data = nullptr;
 
  public:
+  State() = default;
+  State(const State& s)
+  {
+    _skip = s._skip;
+    _data = s._data;
+  }
   template<class T>
   void Set(std::shared_ptr<T> ptr)
   {
@@ -95,7 +102,7 @@ class State
   auto Emplace(Ts... ts) -> std::shared_ptr<T>
   {
     auto ret = std::make_shared<T>(ts...);
-    _data    = std::static_pointer_cast<void>(ret);
+    _data    = ret;
     return ret;
   }
   template<class T>
@@ -176,54 +183,69 @@ struct PriorityBase
   };
 };
 }  // namespace detail
-class Manager
+
+namespace detail
+{
+template<class... Ts>
+auto ManagerFunctionWrapper(UD::Concept::Invocable<Ts...> auto func, Ts&&... ts)
+    -> std::function<void()>
+{
+  return [&func, &ts...]()
+  {
+    func(std::forward<Ts>(ts)...);
+  };
+}
+template<class Wrapper = decltype(ManagerFunctionWrapper<>([]() {}))>
+class ManagerDef
 {
   // TODO: replace std::function with own implementation because it's slow
-  std::deque<std::function<void()>> _event_queue           = {};
-  std::deque<std::function<void()>> _new_event_queue       = {};
-  std::mutex                        _mutex_event_queue     = {};
-  std::mutex                        _mutex_new_event_queue = {};
+  using Clock     = std::chrono::steady_clock;
+  using TimePoint = Clock::time_point;
+  std::multimap<TimePoint, Wrapper> _event_queue;
+  std::multimap<TimePoint, Wrapper> _new_event_queue;
+  // std::deque<std::function<void()>>                 _event_queue           =
+  // {}; std::deque<std::function<void()>>                 _new_event_queue =
+  // {};
+  std::mutex _mutex_event_queue     = {};
+  std::mutex _mutex_new_event_queue = {};
 
  public:
-  void Queue(std::function<void()> func)
+  template<class... Ts>
+  void Queue(UD::Concept::Invocable<Ts...> auto func, Ts&&... ts)
   {
+    auto wrapper
+        = ManagerFunctionWrapper(std::move(func), std::forward<Ts>(ts)...);
     if (!_mutex_event_queue.try_lock())
     {
-      QueueNew(std::move(func));
+      QueueNew(std::move(wrapper));
     }
     else
     {
       auto lock = std::scoped_lock{std::adopt_lock, _mutex_event_queue};
-      QueueSynchronous(std::move(func));
+      QueueSynchronous(std::move(wrapper));
     }
   }
-  void QueueSynchronous(std::function<void()> func)
+  void QueueSynchronous(Wrapper wrapper)
   {
-    _event_queue.push_back(std::move(func));
+    _event_queue.insert(_event_queue.end(),
+                        std::make_pair(Clock::now(), std::move(wrapper)));
   }
-  void QueueNew(std::function<void()> func)
+  void QueueNew(Wrapper wrapper)
   {
     auto lock = std::scoped_lock{_mutex_new_event_queue};
-    _new_event_queue.push_back(std::move(func));
+    _new_event_queue.insert(_event_queue.end(),
+                            std::make_pair(Clock::now(), std::move(wrapper)));
   }
   void UpdateQueue()
   {
     auto lock = std::scoped_lock{_mutex_event_queue, _mutex_new_event_queue};
-
-    while (!_new_event_queue.empty())
+    for (auto& [timepoint, function] : _new_event_queue)
     {
-      _event_queue.push_back(std::move(_new_event_queue.front()));
-      _new_event_queue.pop_front();
+      _event_queue.insert(
+          _event_queue.end(),
+          std::make_pair(std::move(timepoint), std::move(function)));
     }
-  }
-  auto Empty() -> bool
-  {
-    auto lock = std::scoped_lock{_mutex_event_queue};
-    return EmptySynchronous();
-  }
-  auto EmptySynchronous() -> bool
-  {
-    return _event_queue.empty();
+    _new_event_queue.clear();
   }
 
   void RunAll()
@@ -234,10 +256,12 @@ class Manager
   }
   void RunAllSynchronous()
   {
-    auto s = _event_queue.size();
-    for (std::size_t i = 0; i < s; ++i)
+    auto m       = std::move(_event_queue);
+    _event_queue = std::multimap<TimePoint, Wrapper>{};
+
+    for (auto& [timepoint, function] : m)
     {
-      RunNextSynchronous();
+      function();
     }
   }
   void RunNext()
@@ -248,29 +272,53 @@ class Manager
   }
   void RunNextSynchronous()
   {
-    _event_queue.front()();
-    _event_queue.pop_front();
+    auto it = _event_queue.begin();
+    it->second();
+    _event_queue.erase(it);
   }
   void Run()
   {
-    UpdateQueue();
-    auto lock = std::scoped_lock{_mutex_event_queue};
-    RunSynchronous();
+    auto should = bool(false);
+    {
+      auto lock = std::scoped_lock{_mutex_event_queue, _mutex_new_event_queue};
+      should    = !_event_queue.empty() || !_new_event_queue.empty();
+    }
+    while (should)
+    {
+      UpdateQueue();
+      {
+        auto lock = std::scoped_lock{_mutex_event_queue};
+        RunSynchronous();
+      }
+      {
+        auto lock
+            = std::scoped_lock{_mutex_event_queue, _mutex_new_event_queue};
+        should = !_event_queue.empty() || !_new_event_queue.empty();
+      }
+    }
   }
   void RunSynchronous()
   {
-    while (!EmptySynchronous())
+    while (!_event_queue.empty())
     {
-      RunNextSynchronous();
+      RunAllSynchronous();
     }
   }
 };
+}  // namespace detail
+using Manager = detail::ManagerDef<>;
 template<class... _Parameters>
 class Event
-    : public UD::Interface::Interface<Event<_Parameters...>,
-                                      UD::Pack::Pack<detail::PriorityBase>,
-                                      UD::Interface::SimpleModifiers>
+    : public UD::Interface::Interface<
+          Event<_Parameters...>,
+          UD::Pack::Pack<detail::PriorityBase>,
+          UD::Interface::SimpleModifiers::Add<UD::Interface::Modifier::Shared>>
 {
+  using Interface = UD::Interface::Interface<
+      Event<_Parameters...>,
+      UD::Pack::Pack<detail::PriorityBase>,
+      UD::Interface::SimpleModifiers::Add<UD::Interface::Modifier::Shared>>;
+
  public:
   using StateHandler = Handler<State&, _Parameters...>;
   using Handler      = Handler<_Parameters...>;
@@ -330,38 +378,9 @@ class Event
     }
   }
 
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void Fire(Ts&&... parameters)
-  {
-    Fire(State{}, std::forward<Ts>(parameters)...);
-  }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void Fire(State state, Ts&&... parameters)
-  {
-    {
-      auto lock = std::scoped_lock{_mutex_manager};
-      if (_manager)
-      {
-        _manager->Queue(
-            [this,
-             state,
-             ... parameters = std::forward<Ts>(parameters)]() mutable
-            {
-              FireBypassManager(std::move(state),
-                                std::forward<Ts>(parameters)...);
-            });
-        return;
-      }
-    }
-    FireBypassManager(std::move(state), std::forward<Ts>(parameters)...);
-  }
   void UpdateCallersAssumedLockMutex()
   {
-    auto lock = std::scoped_lock{ _mutex_new};
+    auto lock = std::scoped_lock{_mutex_new};
     for (auto& p : _new_positive_callers)
     {
       while (!p.second.empty())
@@ -470,7 +489,29 @@ class Event
   virtual void PreFire(State& state, _Parameters... parameters) {}
   virtual void PostFire(State& state, _Parameters... parameters) {}
 
+  Event() noexcept : Event{nullptr} {}
+  Event(std::shared_ptr<Manager> manager) : _manager{std::move(manager)}
+  {
+    Add(
+        [this](State& state, _Parameters&&... parameters)
+        {
+          this->PreFire(state, std::forward<_Parameters>(parameters)...);
+        },
+        Event::InternalPriority::FIRST);
+    Add(
+        [this](State& state, _Parameters&&... parameters)
+        {
+          this->PostFire(state, std::forward<_Parameters>(parameters)...);
+        },
+        Event::InternalPriority::LAST);
+  }
+
  public:
+  template<class... Ts>
+  Event(const Interface::SharedConstructor&, Ts&&... ts)
+      : Event{std::forward<Ts>(ts)...}
+  {
+  }
   template<class F>
     requires(UD::Concept::Invocable<F, _Parameters...>)
   std::shared_ptr<bool> Add(F function, int priority = 0)
@@ -631,27 +672,43 @@ class Event
   auto operator=(const Event&) -> Event& = default;
   auto operator=(Event&&) noexcept -> Event& = default;
 
-  Event() noexcept : Event{nullptr} {}
-  Event(std::shared_ptr<Manager> manager) : _manager{std::move(manager)}
+  template<class... Ts>
+  static std::shared_ptr<Event> Make(Ts&&... ts)
   {
-    Add(
-        [this](State& state, _Parameters&&... parameters)
-        {
-          this->PreFire(state, std::forward<_Parameters>(parameters)...);
-        },
-        Event::InternalPriority::FIRST);
-    Add(
-        [this](State& state, _Parameters&&... parameters)
-        {
-          this->PostFire(state, std::forward<_Parameters>(parameters)...);
-        },
-        Event::InternalPriority::LAST);
+    return MakeShared<Ts...>(std::forward<Ts>(ts)...);
   }
-
   void SetManager(std::shared_ptr<Manager> manager)
   {
     auto lock = std::scoped_lock{_mutex_manager};
     _manager  = std::move(manager);
+  }
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
+  void Fire(Ts&&... parameters)
+  {
+    Fire(State{}, std::forward<Ts>(parameters)...);
+  }
+  template<class... Ts>
+    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
+                                            UD::Pack::Pack<_Parameters...>>)
+  void Fire(State state, Ts&&... parameters)
+  {
+    {
+      auto lock = std::scoped_lock{_mutex_manager};
+      if (_manager)
+      {
+        _manager->Queue(
+            [shared_this = this->SharedThis(), state](Ts&&... parameters)
+            {
+              shared_this->FireBypassManager(state,
+                                             std::forward<Ts>(parameters)...);
+            },
+            std::forward<Ts>(parameters)...);
+        return;
+      }
+    }
+    FireBypassManager(std::move(state), std::forward<Ts>(parameters)...);
   }
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
