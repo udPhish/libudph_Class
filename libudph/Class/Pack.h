@@ -74,14 +74,23 @@ struct Pack<>
   template<class Other>
   using Concat = typename PackConcat<Pack, Other>::type;
 };
-template<class _T, class... _Ts>
-struct Pack<_T, _Ts...>
+template<class _T, class... _Ts>  requires requires{typename ValuesPack<_T{},_Ts{}...>;}
+struct Pack<_T, _Ts...> 
 {
   static constexpr bool Empty = false;
   using Type                  = _T;
   using Next                  = Pack<_Ts...>;
   template<_T T, _Ts... Ts>
   using Values = ValuesPack<T, Ts...>;
+  template<class Other>
+  using Concat = typename PackConcat<Pack, Other>::type;
+};
+template<class _T, class... _Ts>
+struct Pack<_T, _Ts...>
+{
+  static constexpr bool Empty = false;
+  using Type                  = _T;
+  using Next                  = Pack<_Ts...>;
   template<class Other>
   using Concat = typename PackConcat<Pack, Other>::type;
 };
