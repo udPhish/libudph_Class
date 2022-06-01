@@ -12,9 +12,11 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <libudph/Class/Interface.h>
+#include <libudph/Class/Pack.h>
 #include <libudph/Class/SFINAE.h>
 
 namespace UD::Traits
@@ -68,68 +70,53 @@ concept PackConvertibleTo = UD::SFINAE::pack_is_convertible<T, U>::value;
 }  // namespace UD::Concept
 namespace UD::Concept::Event
 {
-}  // namespace UD::Concept::Event
+}
 namespace UD::Event
 {
 namespace Concept = UD::Concept::Event;
-class State
+enum class Request
 {
-  bool                  _skip = false;
-  std::shared_ptr<void> _data = nullptr;
-
- public:
-  State() = default;
-  State(const State& s)
-  {
-    _skip = s._skip;
-    _data = s._data;
-  }
-  template<class T>
-  void Set(std::shared_ptr<T> ptr)
-  {
-    _data = ptr;
-  }
-  template<class T, class... Ts>
-    requires requires(Ts... ts)
-    {
-      {
-        T
-        {
-          ts...
-        }
-        } -> std::same_as<T>;
-    }
-  auto Emplace(Ts... ts) -> std::shared_ptr<T>
-  {
-    auto ret = std::make_shared<T>(ts...);
-    _data    = ret;
-    return ret;
-  }
-  template<class T>
-  auto Get() -> std::shared_ptr<T>
-  {
-    return std::static_pointer_cast<T>(_data);
-  }
-  void Skip()
-  {
-    _skip = true;
-  }
-  bool IsSkipping()
-  {
-    return _skip;
-  }
-  void Clear()
-  {
-    _skip = false;
-    _data = nullptr;
-  }
+  Skip,
+  Continue,
+  Remove
 };
 template<class... _Parameters>
-class Event;
-
-template<class... _Parameters>
 class Handler;
+template<class... Ts>
+class Event;
+class Validator
+{
+  friend class Invalidator;
 
+  std::shared_ptr<bool> valid = std::make_shared<bool>(true);
+
+ public:
+  operator bool()
+  {
+    return valid && *valid;
+  }
+};
+class Invalidator
+{
+  std::shared_ptr<bool> count = std::make_shared<bool>(true);
+  std::shared_ptr<bool> valid = nullptr;
+
+ public:
+  ~Invalidator()
+  {
+    if (valid)
+    {
+      *valid = count.use_count() > 1;
+    }
+  }
+  Invalidator(const Invalidator& other) = default;
+  Invalidator(Invalidator&&) noexcept   = default;
+  auto operator=(const Invalidator&) -> Invalidator& = default;
+  auto operator=(Invalidator&&) noexcept -> Invalidator& = default;
+
+  Invalidator() = default;
+  Invalidator(const Validator& validator) : valid{validator.valid} {}
+};
 namespace detail
 {
 template<class... _Parameters>
@@ -138,31 +125,22 @@ struct EventConnection
   // TODO: Handle std::function<std::ref<Callable<void(_Parameters...)>>>
   // instead to avoid std::function dynamic alocation nonsense.
   //       Likely requires wrapper class (Caller?)
-  std::function<void(_Parameters...)> function = [](_Parameters...) {};
-  std::shared_ptr<bool>               valid    = std::make_shared<bool>(true);
-};
-
-}  // namespace detail
-class Invalidator
-{
-  // TODO: Find better way to reference count... Using unnecessary bool* here.
-  std::shared_ptr<bool> _count = std::make_shared<bool>(true);
-  std::shared_ptr<bool> _valid = nullptr;
-
- public:
-  Invalidator(std::shared_ptr<bool> valid) : _valid{valid} {}
-  ~Invalidator()
+  std::function<Request(_Parameters...)> function
+      = [](_Parameters...) -> Request
   {
-    if (_valid)
-    {
-      *_valid = _count && _count.use_count() > 1;
-    }
-  }
-  Invalidator(const Invalidator& other) = default;
-  Invalidator(Invalidator&&) noexcept   = default;
-  auto operator=(const Invalidator&) -> Invalidator& = default;
-  auto operator=(Invalidator&&) noexcept -> Invalidator& = default;
+    return Request::Continue;
+  };
+  Validator valid = {};
 };
+}  // namespace detail
+namespace detail
+{
+using EmptyProcessorLambda = decltype(
+    [](auto&& a) -> Request
+    {
+      return Request::Continue;
+    });
+}
 enum Priority : int
 {
   LOWEST  = std::numeric_limits<int>::min(),
@@ -183,6 +161,42 @@ struct PriorityBase
   };
 };
 }  // namespace detail
+template<class... Ts>
+struct EmptyProcessor : Ts...
+{
+  using Ts::operator()...;
+};
+template<class... Ts>
+struct Processor : public EmptyProcessor<Ts..., detail::EmptyProcessorLambda>
+{
+  using EmptyProcessor<Ts..., detail::EmptyProcessorLambda>::operator();
+
+  template<class... Us>
+  Processor(Us&&... us) : EmptyProcessor<Ts..., detail::EmptyProcessorLambda>
+  {
+    std::forward<Us>(us)..., detail::EmptyProcessorLambda {}
+  }
+  {
+  }
+};
+template<class... Ts>
+Processor(Ts...) -> Processor<Ts...>;
+template<class... Ts>
+struct Data
+{
+  std::variant<std::monostate, Ts...> content;
+
+  template<class... Fs>
+  auto Process(Fs&&... fs)
+  {
+    return Process(Processor{std::forward<Fs>(fs)...});
+  }
+  template<class... Fs>
+  auto Process(Processor<Fs...> processor)
+  {
+    return std::visit(processor, content);
+  }
+};
 
 namespace detail
 {
@@ -190,7 +204,7 @@ template<class... Ts>
 auto ManagerFunctionWrapper(UD::Concept::Invocable<Ts...> auto func, Ts&&... ts)
     -> std::function<void()>
 {
-  return [&func, &ts...]()
+  return [func = std::move(func), &ts...]()
   {
     func(std::forward<Ts>(ts)...);
   };
@@ -201,13 +215,11 @@ class ManagerDef
   // TODO: replace std::function with own implementation because it's slow
   using Clock     = std::chrono::steady_clock;
   using TimePoint = Clock::time_point;
-  std::multimap<TimePoint, Wrapper> _event_queue;
-  std::multimap<TimePoint, Wrapper> _new_event_queue;
-  // std::deque<std::function<void()>>                 _event_queue           =
-  // {}; std::deque<std::function<void()>>                 _new_event_queue =
-  // {};
-  std::mutex _mutex_event_queue     = {};
-  std::mutex _mutex_new_event_queue = {};
+
+  std::multimap<TimePoint, Wrapper> _event_queue           = {};
+  std::multimap<TimePoint, Wrapper> _new_event_queue       = {};
+  std::mutex                        _mutex_event_queue     = {};
+  std::mutex                        _mutex_new_event_queue = {};
 
  public:
   template<class... Ts>
@@ -307,177 +319,248 @@ class ManagerDef
 };
 }  // namespace detail
 using Manager = detail::ManagerDef<>;
+
 template<class... _Parameters>
-class Event
+class Handler;
+template<class... Ts>
+class Event;
+template<class... _DataTypes, class... _Parameters>
+class Event<Data<_DataTypes...>, _Parameters...>;
+template<class... _DataTypes, class... _Parameters>
+  requires(std::same_as<_DataTypes, std::remove_reference_t<_DataTypes>>&&...)
+class Event<Data<_DataTypes...>, _Parameters...>
     : public UD::Interface::Interface<
-          Event<_Parameters...>,
+          Event<Data<_DataTypes...>, _Parameters...>,
           UD::Pack::Pack<detail::PriorityBase>,
-          UD::Interface::SimpleModifiers::Add<UD::Interface::Modifier::Shared>>
+          UD::Interface::SimpleModifiers>
 {
-  using Interface = UD::Interface::Interface<
-      Event<_Parameters...>,
-      UD::Pack::Pack<detail::PriorityBase>,
-      UD::Interface::SimpleModifiers::Add<UD::Interface::Modifier::Shared>>;
+  using Interface
+      = UD::Interface::Interface<Event<Data<_DataTypes...>, _Parameters...>,
+                                 UD::Pack::Pack<detail::PriorityBase>,
+                                 UD::Interface::SimpleModifiers>;
+  using EventConnection
+      = detail::EventConnection<Data<_DataTypes...>&, _Parameters...>;
+  using CallerContainer    = std::vector<EventConnection>;
+  using CallerContainerMap = std::map<int, CallerContainer>;
 
  public:
-  using StateHandler = Handler<State&, _Parameters...>;
-  using Handler      = Handler<_Parameters...>;
+  template<class... T>
+    requires(
+        sizeof...(T) == 0
+        || (sizeof...(T) == 1
+            && (std::convertible_to<_DataTypes,
+                                    typename Pack::Pack<T...>::Type> || ...)))
+  using Handler = UD::Event::Handler<T..., _Parameters...>;
+
+  struct Container
+  {
+    CallerContainerMap _positive_callers     = {};
+    CallerContainerMap _new_positive_callers = {};
+    CallerContainerMap _negative_callers     = {};
+    CallerContainerMap _new_negative_callers = {};
+    CallerContainer    _zero_callers         = {};
+    CallerContainer    _new_zero_callers     = {};
+    CallerContainer    _first_callers        = {};
+    CallerContainer    _new_first_callers    = {};
+    CallerContainer    _last_callers         = {};
+    CallerContainer    _new_last_callers     = {};
+    CallerContainer    _conditions           = {};
+    CallerContainer    _new_conditions       = {};
+
+    std::vector<std::function<void()>> _delayed_fires       = {};
+    std::shared_ptr<Manager>           _manager             = nullptr;
+    std::mutex                         _mutex               = {};
+    std::mutex                         _mutex_firing        = {};
+    std::mutex                         _mutex_delayed_fires = {};
+    std::mutex                         _mutex_new           = {};
+    std::mutex                         _mutex_manager       = {};
+  };
 
  private:
-  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
-      _positive_callers = {};
-  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
-      _new_positive_callers = {};
-  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
-      _negative_callers = {};
-  std::map<int, std::deque<detail::EventConnection<_Parameters...>>>
-      _new_negative_callers                                              = {};
-  std::deque<detail::EventConnection<_Parameters...>> _zero_callers      = {};
-  std::deque<detail::EventConnection<_Parameters...>> _new_zero_callers  = {};
-  std::deque<detail::EventConnection<_Parameters...>> _first_callers     = {};
-  std::deque<detail::EventConnection<_Parameters...>> _new_first_callers = {};
-  std::deque<detail::EventConnection<_Parameters...>> _last_callers      = {};
-  std::deque<detail::EventConnection<_Parameters...>> _new_last_callers  = {};
-  std::deque<detail::EventConnection<_Parameters...>> _conditions        = {};
-  std::deque<detail::EventConnection<_Parameters...>> _new_conditions    = {};
-
-  State                             _state               = {};
-  std::deque<std::function<void()>> _delayed_fires       = {};
-  std::shared_ptr<Manager>          _manager             = nullptr;
-  std::mutex                        _mutex               = {};
-  std::mutex                        _mutex_firing        = {};
-  std::mutex                        _mutex_delayed_fires = {};
-  std::mutex                        _mutex_new           = {};
-  std::mutex                        _mutex_manager       = {};
+  std::shared_ptr<Container> _container = std::make_shared<Container>();
   // TODO: Improve performance.
   //       Currently accepets callers by value because must handle case
   //       where callers is modified further in stack.
-  void FireCallers(_Parameters... parameters,
-                   std::deque<detail::EventConnection<_Parameters...>> callers)
+  static auto FireCallers(CallerContainer&     callers,
+                          Data<_DataTypes...>& data,
+                          auto&&... parameters)
   {
-    static std::deque<std::size_t> remove_indices;
-    for (std::size_t i = 0; i < callers.size() && !_state.IsSkipping(); ++i)
+    for (auto it = callers.begin(); it != callers.end();)
     {
-      auto& caller = callers[i];
-      if (*caller.valid)
+      if (!it->valid)
       {
-        caller.function(parameters...);
+        it = callers.erase(it);
+        continue;
       }
-      else
+      auto call_ret
+          = it->function(data,
+                         std::forward<decltype(parameters)>(parameters)...);
+      if (call_ret == Request::Remove)
       {
-        remove_indices.push_back(i);
+        it = callers.erase(it);
+        continue;
       }
+      else if (call_ret == Request::Skip)
+      {
+        return Request::Skip;
+      }
+      ++it;
     }
-    if (!remove_indices.empty())
+    return Request::Continue;
+  }
+  static auto FireCallersReverse(CallerContainer&     callers,
+                                 Data<_DataTypes...>& data,
+                                 auto&&... parameters)
+  {
+    for (auto it = callers.rbegin(); it != callers.rend();)
     {
-      for (auto it = remove_indices.rbegin(); it != remove_indices.rend(); ++it)
+      if (!it->valid)
       {
-        callers.erase(callers.begin() + *it);
+        it = static_cast<decltype(it)>(callers.erase(std::next(it).base()));
+        continue;
       }
-      remove_indices.clear();
+      auto call_ret
+          = it->function(data,
+                         std::forward<decltype(parameters)>(parameters)...);
+      if (call_ret == Request::Remove)
+      {
+        it = static_cast<decltype(it)>(callers.erase(std::next(it).base()));
+        continue;
+      }
+      else if (call_ret == Request::Skip)
+      {
+        return Request::Skip;
+      }
+      ++it;
     }
+    return Request::Continue;
   }
 
-  void UpdateCallersAssumedLockMutex()
+  static void UpdateCallersAssumedLockMutex(
+      std::shared_ptr<Container> container)
   {
-    auto lock = std::scoped_lock{_mutex_new};
-    for (auto& p : _new_positive_callers)
+    auto lock = std::scoped_lock{container->_mutex_new};
+    for (auto& [priority, new_callers] : container->_new_positive_callers)
     {
-      while (!p.second.empty())
-      {
-        _positive_callers
-            .insert({p.first,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_back(std::move(p.second.front()));
-        p.second.pop_front();
-      }
+      if (new_callers.empty())
+        continue;
+      auto& caller_container
+          = container->_positive_callers.insert({priority, CallerContainer{}})
+                .first->second;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
-    for (auto& p : _new_negative_callers)
+    for (auto& [priority, new_callers] : container->_new_negative_callers)
     {
-      while (!p.second.empty())
-      {
-        _negative_callers
-            .insert({p.first,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_back(std::move(p.second.front()));
-        p.second.pop_front();
-      }
+      if (new_callers.empty())
+        continue;
+      auto& caller_container
+          = container->_negative_callers.insert({priority, CallerContainer{}})
+                .first->second;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
-    while (!_new_zero_callers.empty())
+    if (!container->_new_zero_callers.empty())
     {
-      _zero_callers.push_back(std::move(_new_zero_callers.front()));
-      _new_zero_callers.pop_front();
+      auto& caller_container = container->_zero_callers;
+      auto& new_callers      = container->_new_zero_callers;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
-    while (!_new_first_callers.empty())
+    if (!container->_new_first_callers.empty())
     {
-      _first_callers.push_back(std::move(_new_first_callers.front()));
-      _new_first_callers.pop_front();
+      auto& caller_container = container->_first_callers;
+      auto& new_callers      = container->_new_first_callers;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
-    while (!_new_last_callers.empty())
+    if (!container->_new_last_callers.empty())
     {
-      _last_callers.push_back(std::move(_new_last_callers.front()));
-      _new_last_callers.pop_front();
+      auto& caller_container = container->_last_callers;
+      auto& new_callers      = container->_new_last_callers;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
-    while (!_new_conditions.empty())
+    if (!container->_new_conditions.empty())
     {
-      _conditions.push_back(std::move(_new_conditions.front()));
-      _new_conditions.pop_front();
+      auto& caller_container = container->_conditions;
+      auto& new_callers      = container->_new_conditions;
+      caller_container.reserve(caller_container.size() + new_callers.size());
+      caller_container.insert(caller_container.end(),
+                              new_callers.begin(),
+                              new_callers.end());
     }
   }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void FireBypassManager(Ts&&... parameters)
+  static void FireBypassManager(std::shared_ptr<Container> container,
+                                auto&&                     value,
+                                auto&&... parameters)  //
+      requires(sizeof...(parameters) == sizeof...(_Parameters))
   {
-    FireBypassManager(State{}, std::forward<Ts>(parameters)...);
-  }
-  void FireBypassManager(State state, _Parameters... parameters)
-  {
-    if (!_mutex_firing.try_lock())
+    auto data = Data<_DataTypes...>{std::forward<decltype(value)>(value)};
+
+    if (!container->_mutex_firing.try_lock())
     {
-      auto lock = std::scoped_lock{_mutex_delayed_fires};
-      _delayed_fires.push_back(
-          [this, state, ... parameters = parameters]() mutable
+      auto lock = std::scoped_lock{container->_mutex_delayed_fires};
+      container->_delayed_fires.push_back(
+          [container = container, &parameters...]()
           {
-            operator()(std::move(state), parameters...);
+            FireContainer(std::move(container),
+                          std::forward<decltype(parameters)>(parameters)...);
           });
       return;
     }
     else
     {
-      _mutex.lock();
-      auto lock = std::scoped_lock{std::adopt_lock, _mutex_firing, _mutex};
-      UpdateCallersAssumedLockMutex();
+      container->_mutex.lock();
+      auto lock = std::scoped_lock{std::adopt_lock,
+                                   container->_mutex_firing,
+                                   container->_mutex};
+      UpdateCallersAssumedLockMutex(container);
 
-      _state = std::move(state);
-      if (!_conditions.empty())
-        FireCallers(parameters..., _conditions);
-      if (!_first_callers.empty())
-        FireCallers(parameters..., _first_callers);
-      if (!_positive_callers.empty())
+      if (!container->_conditions.empty())
+        FireCallers(container->_conditions, data, parameters...);
+      if (!container->_first_callers.empty())
+        FireCallersReverse(container->_first_callers, data, parameters...);
+      if (!container->_positive_callers.empty())
       {
-        for (auto& callers : _positive_callers)
+        for (auto it = container->_positive_callers.rbegin();
+             it != container->_positive_callers.rend();
+             ++it)
         {
-          FireCallers(parameters..., callers.second);
+          FireCallers(it->second, data, parameters...);
         }
       }
-      if (!_zero_callers.empty())
-        FireCallers(parameters..., _zero_callers);
-      if (!_negative_callers.empty())
+      if (!container->_zero_callers.empty())
       {
-        for (auto& callers : _negative_callers)
+        FireCallers(container->_zero_callers, data, parameters...);
+      }
+      if (!container->_negative_callers.empty())
+      {
+        for (auto it = container->_negative_callers.rbegin();
+             it != container->_negative_callers.rend();
+             ++it)
         {
-          FireCallers(parameters..., callers.second);
+          FireCallersReverse(it->second, data, parameters...);
         }
       }
-      if (!_last_callers.empty())
-        FireCallers(parameters..., _last_callers);
+      if (!container->_last_callers.empty())
+        FireCallersReverse(container->_last_callers, data, parameters...);
     }
-    std::deque<std::function<void()>> delayed_fires;
+    std::vector<std::function<void()>> delayed_fires;
     {
-      auto lock      = std::scoped_lock{_mutex_delayed_fires};
-      delayed_fires  = std::move(_delayed_fires);
-      _delayed_fires = std::deque<std::function<void()>>{};
+      auto lock     = std::scoped_lock{container->_mutex_delayed_fires};
+      delayed_fires = std::move(container->_delayed_fires);
+      container->_delayed_fires = std::vector<std::function<void()>>{};
     }
     for (auto& f : delayed_fires)
     {
@@ -485,251 +568,48 @@ class Event
     }
   }
 
- protected:
-  virtual void PreFire(State& state, _Parameters... parameters) {}
-  virtual void PostFire(State& state, _Parameters... parameters) {}
-
-  Event() noexcept : Event{nullptr} {}
-  Event(std::shared_ptr<Manager> manager) : _manager{std::move(manager)}
+  static void FireBypassManager(std::shared_ptr<Container> container,
+                                auto&&... parameters)  //
+      requires(sizeof...(parameters) == sizeof...(_Parameters))
   {
-    Add(
-        [this](State& state, _Parameters&&... parameters)
-        {
-          this->PreFire(state, std::forward<_Parameters>(parameters)...);
-        },
-        Event::InternalPriority::FIRST);
-    Add(
-        [this](State& state, _Parameters&&... parameters)
-        {
-          this->PostFire(state, std::forward<_Parameters>(parameters)...);
-        },
-        Event::InternalPriority::LAST);
+    FireBypassManager(std::move(container),
+                      std::monostate{},
+                      std::forward<decltype(parameters)>(parameters)...);
   }
 
- public:
-  template<class... Ts>
-  Event(const Interface::SharedConstructor&, Ts&&... ts)
-      : Event{std::forward<Ts>(ts)...}
-  {
-  }
-  template<class F>
-    requires(UD::Concept::Invocable<F, _Parameters...>)
-  std::shared_ptr<bool> Add(F function, int priority = 0)
-  {
-    auto connection = detail::EventConnection<_Parameters...>{
-        [function](auto&&... ts) mutable
-        {
-          function(std::forward<decltype(ts)>(ts)...);
-        }};
-    auto valid = connection.valid;
-    if (_mutex.try_lock())
-    {
-      auto lock = std::scoped_lock{std::adopt_lock, _mutex};
+ public
+     :
 
-      if (priority < 0)
-      {
-        _negative_callers
-            .insert({priority,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_front(std::move(connection));
-      }
-      else if (priority > 0)
-      {
-        _positive_callers
-            .insert({priority,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_back(std::move(connection));
-      }
-      else
-      {
-        _zero_callers.push_back(std::move(connection));
-      }
-    }
-    else
-    {
-      auto lock = std::scoped_lock{_mutex_new};
-      if (priority < 0)
-      {
-        _new_negative_callers
-            .insert({priority,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_front(std::move(connection));
-      }
-      else if (priority > 0)
-      {
-        _new_positive_callers
-            .insert({priority,
-                     std::deque<detail::EventConnection<_Parameters...>>{}})
-            .first->second.push_back(std::move(connection));
-      }
-      else
-      {
-        _new_zero_callers.push_back(std::move(connection));
-      }
-    }
-    return valid;
-  }
-  template<class F>
-    requires(UD::Concept::Invocable<F, State&, _Parameters...>)
-  std::shared_ptr<bool> Add(F function, int priority = 0)
-  {
-    return Add(
-        [this, function](_Parameters&&... ps) mutable
-        {
-          function(this->_state, std::forward<decltype(ps)>(ps)...);
-        },
-        priority);
-  }
-  template<class F>
-    requires(UD::Concept::Invocable<F, _Parameters...>)
-  std::shared_ptr<bool> Add(F                                function,
-                            typename Event::InternalPriority priority)
-  {
-    detail::EventConnection<_Parameters...> connection(
-        [function](auto&&... ts) mutable
-        {
-          function(std::forward<decltype(ts)>(ts)...);
-        });
-    auto valid = connection.valid;
-    if (_mutex.try_lock())
-    {
-      auto lock = std::scoped_lock{std::adopt_lock, _mutex};
-      switch (priority)
-      {
-        case Event::InternalPriority::FIRST:
-          _first_callers.push_back(std::move(connection));
-          break;
-        case Event::InternalPriority::LAST:
-          _last_callers.push_front(std::move(connection));
-          break;
-        case Event::InternalPriority::CONDITION:
-          _conditions.push_back(std::move(connection));
-          break;
-      }
-    }
-    else
-    {
-      auto lock = std::scoped_lock{_mutex_new};
-      switch (priority)
-      {
-        case Event::InternalPriority::FIRST:
-          _new_first_callers.push_back(std::move(connection));
-          break;
-        case Event::InternalPriority::LAST:
-          _new_last_callers.push_front(std::move(connection));
-          break;
-        case Event::InternalPriority::CONDITION:
-          _new_conditions.push_back(std::move(connection));
-          break;
-      }
-    }
-    return valid;
-  }
-  template<class F>
-    requires(UD::Concept::Invocable<F, State&, _Parameters...>)
-  std::shared_ptr<bool> Add(F                                function,
-                            typename Event::InternalPriority priority)
-  {
-    return Add(
-        [this, function](_Parameters&&... ps) mutable
-        {
-          function(this->_state, std::forward<decltype(ps)>(ps)...);
-        },
-        priority);
-  }
-  template<class F>
-    requires(UD::Concept::Callable<F, bool(_Parameters...)>)
-  std::shared_ptr<bool> AddCondition(F function)
-  {
-    return Add(
-        [function](State& state, _Parameters... parameters)
-        {
-          if (!function(std::move(parameters)...))
-          {
-            state.Skip();
-          }
-        },
-        Event::InternalPriority::CONDITION);
-  }
-  template<class F>
-    requires(UD::Concept::Callable<F, bool()>)
-  std::shared_ptr<bool> AddCondition(F function)
-  {
-    return Add(
-        [function](State& state, _Parameters... parameters)
-        {
-          if (!function())
-          {
-            state.Skip();
-          }
-        },
-        Event::InternalPriority::CONDITION);
-  }
-
-  ~Event() override       = default;
-  Event(const Event&)     = default;
-  Event(Event&&) noexcept = default;
-  auto operator=(const Event&) -> Event& = default;
-  auto operator=(Event&&) noexcept -> Event& = default;
-
-  template<class... Ts>
-  static std::shared_ptr<Event> Make(Ts&&... ts)
-  {
-    return MakeShared<Ts...>(std::forward<Ts>(ts)...);
-  }
-  void SetManager(std::shared_ptr<Manager> manager)
-  {
-    auto lock = std::scoped_lock{_mutex_manager};
-    _manager  = std::move(manager);
-  }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void Fire(Ts&&... parameters)
-  {
-    Fire(State{}, std::forward<Ts>(parameters)...);
-  }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void Fire(State state, Ts&&... parameters)
+     static void
+     FireContainer(std::shared_ptr<Container> container, auto&&... parameters)
   {
     {
-      auto lock = std::scoped_lock{_mutex_manager};
-      if (_manager)
+      auto lock = std::scoped_lock{container->_mutex_manager};
+      if (container->_manager)
       {
-        _manager->Queue(
-            [shared_this = this->SharedThis(), state](Ts&&... parameters)
+        container->_manager->Queue(
+            [container = std::move(container)](auto&&... parameters)
             {
-              shared_this->FireBypassManager(state,
-                                             std::forward<Ts>(parameters)...);
+              FireBypassManager(
+                  std::move(container),
+                  std::forward<decltype(parameters)>(parameters)...);
             },
-            std::forward<Ts>(parameters)...);
+            std::forward<decltype(parameters)>(parameters)...);
         return;
       }
     }
-    FireBypassManager(std::move(state), std::forward<Ts>(parameters)...);
+    FireBypassManager(std::move(container),
+                      std::forward<decltype(parameters)>(parameters)...);
   }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void operator()(Ts&&... parameters)
+  void Fire(auto&&... parameters)
   {
-    operator()(State{}, std::forward<Ts>(parameters)...);
+    FireContainer(_container,
+                  std::forward<decltype(parameters)>(parameters)...);
   }
-  template<class... Ts>
-    requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<Ts...>,
-                                            UD::Pack::Pack<_Parameters...>>)
-  void operator()(State state, Ts&&... parameters)
+  void operator()(auto&&... parameters)
   {
-    Fire(std::move(state), std::forward<Ts>(parameters)...);
-  }
-
- private:
-  template<class... Ts>
-  void LinkCallback(State& state, Ts&&... ps)
-  {
-    FireBypassManager(state, std::forward<Ts>(ps)...);
+    FireContainer(_container,
+                  std::forward<decltype(parameters)>(parameters)...);
   }
 
  public:
@@ -739,75 +619,281 @@ class Event
   void LinkFrom(Event<Ts...>& e)
   {
     e.Add(
-        [this](State& state, Ts&&... ts)
+        [container = std::weak_ptr<Container>{_container}](auto&&... ts)
         {
-          this->LinkCallback<_Parameters...>(state, std::forward<Ts>(ts)...);
+          if (auto lock = container.lock())
+          {
+            FireBypassManager(lock, std::forward<decltype(ts)>(ts)...);
+            return Request::Continue;
+          }
+          else
+          {
+            return Request::Remove;
+          }
         },
         Event::InternalPriority::LAST);
   }
-
   template<class... Ts>
     requires(UD::Concept::PackConvertibleTo<UD::Pack::Pack<_Parameters...>,
                                             UD::Pack::Pack<Ts...>>)
   void LinkTo(Event<Ts...>& e)
   {
     this->Add(
-        [&e](State& state, Ts&&... ts)
+        [container = std::weak_ptr<Container>{e._container}](auto&&... ts)
         {
-          e.template LinkCallback<Ts...>(state, std::forward<Ts>(ts)...);
+          if (auto lock = container.lock())
+          {
+            FireBypassManager(lock, std::forward<decltype(ts)>(ts)...);
+            return Request::Continue;
+          }
+          else
+          {
+            return Request::Remove;
+          }
         },
         Event::InternalPriority::LAST);
   }
+
+ private:
+  // TODO: Fix clang-format issue
+  // HelperConnection and MakeHelperConnection are only necessary to avoid
+  // clang-format bugs with templated lambdas
+  template<class T, class F>
+  struct HelperConnection : public F
+  {
+    auto operator()(auto&& t) requires std::convertible_to<decltype(t), T>
+    {
+      return F::operator()(std::forward<decltype(t)>(t));
+    }
+  };
+  template<class T, class F>
+  static auto MakeHelperConnection(F&& f)
+  {
+    return HelperConnection<T, F>{std::forward<F>(f)};
+  }
+  template<class T, class F>
+    requires UD::Concept::Invocable<F, T, _Parameters...>        //
+        && UD::Concept::Callable<F, Request(T, _Parameters...)>  //
+        &&(std::convertible_to<_DataTypes&, T> || ...)           //
+        auto CreateConnection(F function)
+    {
+      return EventConnection{
+          [function = std::move(function)](Data<_DataTypes...>& data_variant,
+                                           auto&&... parameters)
+          {
+            return data_variant.Process(MakeHelperConnection<T>(
+                [function = std::move(function),
+                 &parameters...](auto&& t) -> Request
+                {
+                  return function(
+                      std::forward<decltype(t)>(t),
+                      std::forward<decltype(parameters)>(parameters)...);
+                }));
+          }};
+    }
+    template<class T, class F>
+      requires UD::Concept::Invocable<F, T, _Parameters...>          //
+          &&(!UD::Concept::Callable<F, Request(T, _Parameters...)>)  //
+          &&(std::convertible_to<_DataTypes&, T> || ...)             //
+          auto CreateConnection(F function)
+      {
+        return EventConnection{
+            [function = std::move(function)](Data<_DataTypes...>& data_variant,
+                                             auto&&... parameters) -> Request
+            {
+              return data_variant.Process(MakeHelperConnection<T>(
+                  [function = std::move(function),
+                   &parameters...](auto&& t) -> Request
+                  {
+                    function(std::forward<decltype(t)>(t),
+                             std::forward<decltype(parameters)>(parameters)...);
+                    return Request::Continue;
+                  }));
+            }};
+      }
+      template<class F>
+        requires UD::Concept::Invocable<F, _Parameters...>        //
+            && UD::Concept::Callable<F, Request(_Parameters...)>  //
+      auto CreateConnection(F function)
+      {
+        return EventConnection{
+            [function = std::move(function)](Data<_DataTypes...>& data_variant,
+                                             auto&&... parameters)
+            {
+              return function(
+                  std::forward<decltype(parameters)>(parameters)...);
+            }};
+      }
+      template<class F>
+        requires UD::Concept::Invocable<F, _Parameters...>          //
+            &&(!UD::Concept::Callable<F, Request(_Parameters...)>)  //
+            auto CreateConnection(F function)
+        {
+          return EventConnection{
+              [function = std::move(function)](
+                  Data<_DataTypes...>& data_variant,
+                  auto&&... parameters)
+              {
+                function(std::forward<decltype(parameters)>(parameters)...);
+                return Request::Continue;
+              }};
+        }
+        auto Add(EventConnection connection, int priority) -> Validator
+        {
+          auto valid = Validator{connection.valid};
+          if (_container->_mutex.try_lock())
+          {
+            auto lock = std::scoped_lock{std::adopt_lock, _container->_mutex};
+            if (priority < 0)
+            {
+              _container->_negative_callers
+                  .insert({priority, CallerContainer{}})
+                  .first->second.push_back(std::move(connection));
+            }
+            else if (priority > 0)
+            {
+              _container->_positive_callers
+                  .insert({priority, CallerContainer{}})
+                  .first->second.push_back(std::move(connection));
+            }
+            else
+            {
+              _container->_zero_callers.push_back(std::move(connection));
+            }
+          }
+          else
+          {
+            auto lock = std::scoped_lock{_container->_mutex_new};
+            if (priority < 0)
+            {
+              _container->_new_negative_callers
+                  .insert({priority, CallerContainer{}})
+                  .first->second.push_back(std::move(connection));
+            }
+            else if (priority > 0)
+            {
+              _container->_new_positive_callers
+                  .insert({priority, CallerContainer{}})
+                  .first->second.push_back(std::move(connection));
+            }
+            else
+            {
+              _container->_new_zero_callers.push_back(std::move(connection));
+            }
+          }
+          return valid;
+        }
+        auto Add(EventConnection                  connection,
+                 typename Event::InternalPriority priority) -> Validator
+        {
+          auto valid = Validator{connection.valid};
+          if (_container->_mutex.try_lock())
+          {
+            auto lock = std::scoped_lock{std::adopt_lock, _container->_mutex};
+            switch (priority)
+            {
+              case Event::InternalPriority::FIRST:
+                _container->_first_callers.push_back(std::move(connection));
+                break;
+              case Event::InternalPriority::LAST:
+                _container->_last_callers.push_back(std::move(connection));
+                break;
+              case Event::InternalPriority::CONDITION:
+                _container->_conditions.push_back(std::move(connection));
+                break;
+            }
+          }
+          else
+          {
+            auto lock = std::scoped_lock{_container->_mutex_new};
+            switch (priority)
+            {
+              case Event::InternalPriority::FIRST:
+                _container->_new_first_callers.push_back(std::move(connection));
+                break;
+              case Event::InternalPriority::LAST:
+                _container->_new_last_callers.push_back(std::move(connection));
+                break;
+              case Event::InternalPriority::CONDITION:
+                _container->_new_conditions.push_back(std::move(connection));
+                break;
+            }
+          }
+          return valid;
+        }
+        auto Add(auto&& function, typename Event::InternalPriority priority)
+            -> Validator
+        {
+          auto connection
+              = CreateConnection(std::forward<decltype(function)>(function));
+          auto ret = connection.valid;
+          Add(std::move(connection), priority);
+          return ret;
+        }
+
+       public:
+        auto Add(auto&& function, int priority = 0)  //
+            -> Validator                             //
+        {
+          auto connection
+              = CreateConnection(std::forward<decltype(function)>(function));
+          auto ret = connection.valid;
+          Add(std::move(connection), priority);
+          return ret;
+        }
+        template<class T>
+        auto Add(auto&& function, int priority = 0)  //
+            -> Validator                             //
+        {
+          auto connection
+              = CreateConnection<T>(std::forward<decltype(function)>(function));
+          auto ret = connection.valid;
+          Add(std::move(connection), priority);
+          return ret;
+        }
+
+        Event() noexcept : Event{nullptr} {}
+        Event(std::shared_ptr<Manager> manager)
+        {
+          _container->_manager = std::move(manager);
+        }
+
+        ~Event() override       = default;
+        Event(const Event&)     = default;
+        Event(Event&&) noexcept = default;
+        auto operator=(const Event&) -> Event& = default;
+        auto operator=(Event&&) noexcept -> Event& = default;
+
+        void SetManager(std::shared_ptr<Manager> manager)
+        {
+          auto lock            = std::scoped_lock{_container->_mutex_manager};
+          _container->_manager = std::move(manager);
+        }
 };
+template<class... Ts>
+class Event : public Event<Data<>, Ts...>
+{
+ public:
+  using Event<Data<>, Ts...>::Event;
+  ~Event() override = default;
+};
+
 template<class... _Parameters>
 class Handler
     : public UD::Interface::Interface<Handler<_Parameters...>,
                                       UD::Interface::SimpleModifiers>
 {
-  using FunctionType = std::function<void(_Parameters...)>;
-
-  FunctionType             _function     = [](_Parameters...) {};
-  std::vector<Invalidator> _invalidators = {};
-  bool                     _enabled      = true;
-
-  template<class... Ts>
-  void Run(Ts&&... parameters)
+  using FunctionType = std::function<Request(_Parameters...)>;
+  struct Container
   {
-    if (_enabled)
+    FunctionType function = [](_Parameters...)
     {
-      _function(std::forward<Ts>(parameters)...);
-    }
-  }
-  template<class... Ts>
-  struct HasState : public std::false_type
-  {
-  };
-  template<std::same_as<State&> S, class... Ts>
-  struct HasState<S, Ts...> : public std::true_type
-  {
-  };
-  template<class F, class... Ts>
-    requires(!HasState<_Parameters...>::value)
-  auto GenerateAdaptedRun(F func)
-  {
-    return [this, func](Ts&&... ts) mutable
-    {
-      std::apply(&Handler::Run<_Parameters...>,
-                 std::tuple_cat(std::tuple<Handler*>(this),
-                                func(std::forward<Ts>(ts)...)));
+      return Request::Continue;
     };
-  }
-  template<class F, class... Ts>
-    requires(HasState<_Parameters...>::value)
-  auto GenerateAdaptedRun(F func)
-  {
-    return [this, func](State& state, Ts&&... ts) mutable
-    {
-      std::apply(&Handler::Run<_Parameters...>,
-                 std::tuple_cat(std::tuple<Handler*, State&>(this, state),
-                                func(std::forward<Ts>(ts)...)));
-    };
-  }
+    bool enabled = true;
+  };
+
+  std::shared_ptr<Container> _container = std::make_shared<Container>();
 
  public:
   ~Handler() override         = default;
@@ -817,237 +903,99 @@ class Handler
   auto operator=(Handler&&) noexcept -> Handler& = default;
 
   Handler() noexcept = default;
-  Handler(FunctionType function) : _function{std::move(function)} {}
-  template<class T>
-  Handler(void (T::*function)(_Parameters...), T* type) : _function
-  {
-    [type, function](_Parameters&&... ps) mutable
+  template<class F>
+    requires std::convertible_to<F, FunctionType> Handler(F function)
+        : _container{std::make_shared<Container>(std::move(function), true)}
     {
-      (type->*function)(std::forward<_Parameters>(ps)...);
     }
-  }
-  {
-  }
-
- public:
-  template<std::size_t _Size, class _EventType>
-  void operator()(std::array<_EventType&, _Size> events, int priority = 0)
-  {
-    for (auto& e : events)
+    template<class F>
+      requires(!std::convertible_to<F, FunctionType>)
+    Handler(F function) : Handler
     {
-      operator()(e, priority);
-    }
-  }
-  template<class... Ts>
-  void operator()(Event<Ts...>& e, int priority = 0)
-  {
-    _invalidators.push_back(e.Add(
-        [this](_Parameters&&... ps) mutable
-        {
-          this->Run<_Parameters...>(std::forward<_Parameters>(ps)...);
-        },
-        priority));
-  }
-  template<class F, class... Ts>
-    requires(!std::convertible_to<F, int>)
-  void operator()(Event<Ts...>& e, F adaptor_function, int priority = 0)
-  {
-    _invalidators.push_back(
-        e.Add(GenerateAdaptedRun<F, Ts...>(std::move(adaptor_function)),
-              priority));
-  }
-  void operator()()
-  {
-    _invalidators.clear();
-  }
-  void Reset()
-  {
-    _function = {};
-  }
-  void Reset(FunctionType function)
-  {
-    _function = std::move(function);
-  }
-  template<class T>
-  void Reset(void (T::*function)(_Parameters...), T* type)
-  {
-    _function = [type, function](_Parameters... ps)
-    {
-      (type->*function)(std::move(ps)...);
-    };
-  }
-  void Enable(bool enable = true)
-  {
-    _enabled = enable;
-  }
-  void Disable()
-  {
-    Enable(false);
-  }
-};
-template<class _Return, class... _Parameters>
-struct Handler<_Return(_Parameters...)> : public Handler<_Parameters...>
-{
-  ~Handler() override = default;
-  using Handler<_Parameters...>::Handler;
-};
-namespace detail
-{
-template<class T>
-struct CallableToFunctionType
-{
-};
-template<class T, class Return, class... Args>
-struct CallableToFunctionType<Return (T::*)(Args...) const>
-{
-  using type = Return(Args...);
-};
-template<class T, class Return, class... Args>
-struct CallableToFunctionType<Return (T::*)(Args...)>
-{
-  using type = Return(Args...);
-};
-template<class Return, class... Args>
-struct CallableToFunctionType<Return (*)(Args...)>
-{
-  using type = Return(Args...);
-};
-}  // namespace detail
-template<class T>
-Handler(T) -> Handler<
-    typename detail::CallableToFunctionType<decltype(&T::operator())>::type>;
-template<class T>
-Handler(T) -> Handler<typename detail::CallableToFunctionType<T>::type>;
-
-template<class... _Parameters>
-class Queue
-    : public UD::Interface::Interface<
-          Queue<_Parameters...>,
-          UD::Pack::Pack<Event<_Parameters...>, Handler<_Parameters...>>,
-          UD::Interface::SimpleModifiers>
-{
-  using ValueTuple = std::tuple<_Parameters...>;
-
-  std::list<ValueTuple> _queued_event_values;
-
-  void Push(_Parameters... parameters)
-  {
-    _queued_event_values.push_back(ValueTuple{std::move(parameters)...});
-  }
-  void ProcessTuple(ValueTuple& values)
-  {
-    std::apply(
-        [this](auto&&... ps)
-        {
-          this->Event<_Parameters...>::operator()(
-              std::forward<decltype(ps)>(ps)...);
-        },
-        values);
-  }
-  template<UD::Concept::Callable<bool(_Parameters...)> T>
-  bool ProcessCondition(T condition, ValueTuple& tup)
-  {
-    return std::apply(condition, tup);
-  }
-  template<UD::Concept::Callable<bool()> T>
-  bool ProcessCondition(T condition, ValueTuple& tup)
-  {
-    return condition();
-  }
-
- public:
-  ~Queue() override       = default;
-  Queue(const Queue&)     = default;
-  Queue(Queue&&) noexcept = default;
-  auto operator=(const Queue&) -> Queue& = default;
-  auto operator=(Queue&&) noexcept -> Queue& = default;
-  Queue() noexcept
-      : Queue::Super{Queue::template Constructor<Handler<_Parameters...>>::Call(
-          &Queue::Push,
-          this)}
-  {
-  }
-
-  using Handler<_Parameters...>::operator();
-
-  void ProcessNext()
-  {
-    Process(1);
-  }
-  std::size_t Size() const
-  {
-    return _queued_event_values.size();
-  }
-  void Process(std::size_t max = 0)
-  {
-    if (!max)
-    {
-      ProcessWhile(
-          []()
-          {
-            return true;
-          });
-    }
-    else
-    {
-      ProcessWhile(
-          [max]()
-          {
-            static std::size_t val = max;
-            return val-- != 0;
-          });
-    }
-  }
-  template<class T>
-  void ProcessWhile(T&& condition)
-  {
-    ProcessWhileIf(std::forward<T>(condition),
-                   []()
-                   {
-                     return true;
-                   });
-  }
-  template<class T>
-  void ProcessIf(T&& condition)
-  {
-    ProcessWhileIf(
-        []()
-        {
-          return true;
-        },
-        std::forward<T>(condition));
-  }
-  // TODO: Rethink this function as it is inflexible and too specific.  Maybe
-  // separate out conditions to be specified elsewhere.
-  template<class T, class U>
-  void ProcessWhileIf(T while_condition, U if_condition)
-  {
-    for (auto it = _queued_event_values.begin();
-         it != _queued_event_values.end()
-         && ProcessCondition(while_condition, *it);)
-    {
-      if (!ProcessCondition(if_condition, *it))
+      [function = std::move(function)](auto&&... ps)
       {
-        ++it;
-        continue;
+        function(std::forward<decltype(ps)>(ps)...);
+        return Request::Continue;
       }
-      ProcessTuple(*it);
-      it = _queued_event_values.erase(it);
     }
-  }
+    {
+    }
+    template<class T>
+    Handler(Request (T::*function)(_Parameters...), T* type) : Handler
+    {
+      [type, function = std::move(function)](auto&&... ps)
+      {
+        return type->*function(std::forward<decltype(ps)>(ps)...);
+      }
+    }
+    {
+    }
+    template<class T>
+    Handler(void (T::*function)(_Parameters...), T* type) : Handler
+    {
+      [type, function = std::move(function)](auto&&... ps)
+      {
+        type->*function(std::forward<decltype(ps)>(ps)...);
+        return Request::Continue;
+      }
+    }
+    {
+    }
 
-  template<UD::Concept::Callable<bool(_Parameters...)> T>
-  void Purge(T condition)
-  {
-    std::erase_if(_queued_event_values,
-                  [condition](std::tuple<_Parameters...> tup)
-                  {
-                    return std::apply(condition, tup);
-                  });
-  }
-  void Purge()
-  {
-    _queued_event_values.clear();
-  }
+   public:
+    template<std::size_t _Size, class _EventType>
+    void operator()(std::array<_EventType&, _Size> events, int priority = 0)
+    {
+      for (auto& e : events)
+        operator()(e, priority);
+    }
+    template<class... Ts, class... Us>
+      requires(sizeof...(Us) < sizeof...(_Parameters)
+               && sizeof...(Us) == sizeof...(_Parameters) - 1)
+    void operator()(Event<Data<Ts...>, Us...>& e, int priority = 0)
+    {
+      e.template Add<typename UD::Pack::Pack<_Parameters...>::Type>(
+          [container = std::weak_ptr<Container>{_container}](auto&&... ps)
+          {
+            if (auto lock = container.lock())
+            {
+              if (lock->enabled)
+              {
+                return lock->function(std::forward<decltype(ps)>(ps)...);
+              }
+              return Request::Continue;
+            }
+            return Request::Remove;
+          },
+          priority);
+    }
+    template<class... Ts, class... Us>
+      requires(sizeof...(Us) == sizeof...(_Parameters))
+    void operator()(Event<Data<Ts...>, Us...>& e, int priority = 0)
+    {
+      e.Add(
+          [container = std::weak_ptr<Container>{_container}](auto&&... ps)
+          {
+            if (auto lock = container.lock())
+            {
+              if (lock->enabled)
+              {
+                return lock->function(std::forward<decltype(ps)>(ps)...);
+              }
+              return Request::Continue;
+            }
+            return Request::Remove;
+          },
+          priority);
+    }
+
+    void Enable(bool enable = true)
+    {
+      _container->enabled = enable;
+    }
+    void Disable()
+    {
+      Enable(false);
+    }
 };
 }  // namespace UD::Event
