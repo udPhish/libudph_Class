@@ -874,6 +874,8 @@ template<class... Ts>
 class Event : public Event<Data<>, Ts...>
 {
  public:
+  using Handler = UD::Event::Handler<Ts...>;
+
   using Event<Data<>, Ts...>::Event;
   ~Event() override = default;
 };
