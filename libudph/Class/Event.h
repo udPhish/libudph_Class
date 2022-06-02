@@ -851,6 +851,33 @@ class Event<Data<_DataTypes...>, _Parameters...>
           Add(std::move(connection), priority);
           return ret;
         }
+        template<class F>
+          requires UD::Concept::Callable<F, bool(_Parameters...)>  //
+              || UD::Concept::Callable<F, bool()>
+        auto AddCondition(F function)
+        {
+          return Add(
+              [function = std::move(function)](auto&&... parameters)
+              {
+                if (function(std::forward<decltype(parameters)>(parameters)...))
+                  return Request::Continue;
+                return Request::Skip;
+              },
+              Event::InternalPriority::CONDITION);
+        }
+        template<class T, class F>
+          requires UD::Concept::Callable<F, bool(T, _Parameters...)>
+        auto AddCondition(F function)
+        {
+          return Add<T>(
+              [function = std::move(function)](auto&&... parameters)
+              {
+                if (function(std::forward<decltype(parameters)>(parameters)...))
+                  return Request::Continue;
+                return Request::Skip;
+              },
+              Event::InternalPriority::CONDITION);
+        }
 
         Event() noexcept : Event{nullptr} {}
         Event(std::shared_ptr<Manager> manager)
