@@ -179,13 +179,130 @@ struct Processor : public EmptyProcessor<Ts..., detail::EmptyProcessorLambda>
   {
   }
 };
+template<class VariantType, class Type, std::size_t Index = 0>
+struct SameIndex;
+template<class VariantType, class Type, std::size_t Index>
+  requires(Index >= std::variant_size_v<VariantType>)
+struct SameIndex<VariantType, Type, Index>
+{
+  static constexpr bool Exists()
+  {
+    return false;
+  }
+};
+template<class VariantType, class Type, std::size_t Index>
+struct SameIndex
+{
+  static constexpr bool Exists()  //
+      requires
+      std::same_as<Type, std::variant_alternative_t<Index, VariantType>>
+  {
+    return true;
+  }
+  static constexpr bool Exists()  //
+      requires(
+          !std::same_as<Type, std::variant_alternative_t<Index, VariantType>>)
+  {
+    return SameIndex<VariantType, Type, Index + 1>::Exists();
+  }
+  static constexpr std::size_t Value()  //
+      requires
+      std::same_as<Type, std::variant_alternative_t<Index, VariantType>>
+  {
+    return Index;
+  }
+  static constexpr std::size_t Value()  //
+      requires(
+          !std::same_as<Type, std::variant_alternative_t<Index, VariantType>>)
+  {
+    return SameIndex<VariantType, Type, Index + 1>::Value();
+  }
+};
+template<class VariantType, class Type, std::size_t Index = 0>
+struct ConvertibleIndex
+{
+  static constexpr bool Exists()  //
+      requires
+      std::convertible_to<Type, std::variant_alternative_t<Index, VariantType>>
+  {
+    return true;
+  }
+  static constexpr bool Exists()  //
+      requires(
+          !std::convertible_to<Type,
+                               std::variant_alternative_t<Index, VariantType>>)
+  {
+    return ConvertibleIndex<VariantType, Type, Index + 1>::Exists();
+  }
+  static constexpr std::size_t Value()  //
+      requires
+      std::convertible_to<Type, std::variant_alternative_t<Index, VariantType>>
+  {
+    return Index;
+  }
+  static constexpr std::size_t Value()  //
+      requires(
+          !std::convertible_to<Type,
+                               std::variant_alternative_t<Index, VariantType>>)
+  {
+    return ConvertibleIndex<VariantType, Type, Index + 1>::Value();
+  }
+};
+template<class VariantType, class Type, std::size_t Index>
+  requires(Index >= std::variant_size_v<VariantType>)
+struct ConvertibleIndex<VariantType, Type, Index>
+{
+};
+
+template<class VariantType, class Type>
+struct VariantIndexHelper
+{
+  static constexpr bool Exists()
+  {
+    return SameIndex<VariantType, Type>::Exists()
+        || ConvertibleIndex<VariantType, Type>::Exists();
+  }
+  static constexpr std::size_t Value()  //
+      requires(SameIndex<VariantType, Type>::Exists())
+  {
+    return SameIndex<VariantType, Type>::Value();
+  }
+  static constexpr std::size_t Value()           //
+      requires                                   //
+      (!SameIndex<VariantType, Type>::Exists())  //
+      && (ConvertibleIndex<VariantType, Type>::Exists())
+  {
+    return ConvertibleIndex<VariantType, Type>::Value();
+  }
+};
+
+template<class VariantType, class Type>
+inline constexpr std::size_t VariantIndex
+    = VariantIndexHelper<VariantType, Type>::Value();
+
+template<class VariantType, class Type>
+concept VariantConvertibleTo = VariantIndexHelper<VariantType, Type>::Exists();
+template<class Type, class VariantType>
+concept ConvertibleFromVariant
+    = VariantIndexHelper<VariantType, Type>::Exists();
+
 template<class... Ts>
 Processor(Ts...) -> Processor<Ts...>;
 template<class... Ts>
 struct Data
 {
-  std::variant<std::monostate, Ts...> content;
+ private:
+  using DataType = std::variant<std::monostate, Ts...>;
 
+ public:
+  DataType content = {};
+
+  Data() noexcept = default;
+  Data(ConvertibleFromVariant<DataType> auto&& t)
+      : content(std::in_place_index_t<VariantIndex<DataType, decltype(t)>>{},
+                std::forward<decltype(t)>(t))
+  {
+  }
   template<class... Fs>
   auto Process(Fs&&... fs)
   {
